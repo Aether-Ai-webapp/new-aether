@@ -189,3 +189,93 @@ Stage Summary:
 - Weekly Recap auto-generated from past 7 days of memories
 - No modifications to aether-store.ts or any API routes
 - Lint passes, dev server runs without errors
+
+---
+Task ID: 5
+Agent: Main Agent
+Task: Restructure dashboard with view-based navigation (Settings, Ask/Recap, Collections, Dashboard views)
+
+Work Log:
+- Read full current page.tsx (~1744 lines), aether-store.ts, capture route, and dev.log to understand current state
+- Identified that page.tsx didn't use store.currentView for view switching - used local state instead
+- Store already had `currentView: AppView = 'dashboard' | 'ask' | 'collections' | 'memories' | 'settings'` and `setCurrentView()`
+
+- Created /api/recap/route.ts:
+  - GET endpoint with `hours` query param (default 24)
+  - Fetches memories from Prisma within the time window
+  - Uses z-ai-web-dev-sdk LLM to generate an AI executive recap
+  - Returns recap text, count, topTags, memories, and period
+  - Fallback: generates simple statistical recap if AI fails
+  - Tested: works correctly, generates rich thematic analysis
+
+- Rewrote /src/app/page.tsx with view-based navigation architecture:
+  - Added desktop nav bar in header: Dashboard, Ask AI, Collections, Settings
+  - Added mobile bottom nav with same 4 items
+  - All views use AnimatePresence for smooth transitions
+  - store.currentView controls which view renders in main content area
+
+  View A - Settings (store.currentView === 'settings'):
+  - Aether Sanctuary Preferences header with gradient icon
+  - Intelligence Engine Status: z-ai-web-dev-sdk LLM Core (ACTIVE)
+  - Dynamic Voice Pipeline: z-ai-web-dev-sdk ASR (CONNECTED)
+  - Vision Understanding Engine: z-ai-web-dev-sdk VLM (ACTIVE)
+  - Local Database Engine: Prisma + SQLite (HEALTHY)
+  - Account Profile Email: disabled input showing user email
+  - Sanctuary Statistics: 4-card grid (Memories, Collections, Voice Notes, Favorites)
+  - Return to Workspace button
+
+  View B - Ask AI / Daily Recap (store.currentView === 'ask'):
+  - Automated 24-Hour Executive Recap card with dark gradient background
+  - AI-generated thematic analysis using /api/recap endpoint
+  - Period selector buttons: 24h, 7 days, 30 days
+  - Top tags displayed as pill badges
+  - Memory count and analysis period indicator
+  - Ask Your Mind chat interface (existing AI chat functionality)
+  - Dismiss Report View button
+
+  View C - Collections (store.currentView === 'collections'):
+  - Collections header with gradient icon
+  - Create New Collection UI:
+    - 8 emoji icon picker (📁💻🎨📚🧠🚀💡🏠)
+    - 6 color picker buttons (#6D597A, #E07A5F, etc.)
+    - Name input + create button
+  - Collection grid (1/2/3 responsive columns)
+  - Each card shows: icon, name, memory count, delete button
+  - Left border colored with collection color
+  - Empty state with icon and helper text
+  - Back to Dashboard button
+
+  View D - Dashboard (store.currentView === 'dashboard'):
+  - Preserved all existing functionality:
+    - Capture Capsule Bar with Aether Glow
+    - Weekly Recap Card (now links to Ask view)
+    - AI Brain Panel (expandable)
+    - Filter Bar (type + search)
+    - Memory Grid (masonry layout)
+    - Empty State with suggestion chips
+  - Memory Drawer, Auth Modal, Command Palette preserved
+
+  Navigation updates:
+  - Desktop header: Logo + nav buttons (Dashboard, Ask AI, Collections, Settings) + Search/Brain/Auth
+  - Mobile bottom nav: Same 4 items with icons
+  - Command Palette: Added "Navigate" group with Go to Dashboard/Ask AI/Collections/Settings
+  - "Ask About This Week" button now navigates to Ask view with auto-recap
+  - Active nav items highlighted with purple background
+
+- Ran `bun run lint` — passes with zero errors
+- Browser verified all views: Dashboard, Settings, Ask AI/Recap, Collections, Drawer
+- Tested: AI recap generation works (42 memories analyzed in 24h, rich thematic analysis)
+- Tested: View switching smooth with AnimatePresence transitions
+- Tested: Return navigation buttons work correctly
+- No page errors, dev server running cleanly
+
+Stage Summary:
+- Restructured page.tsx with view-based navigation using store.currentView
+- Created /api/recap/route.ts for AI-powered daily/weekly/monthly executive recaps
+- Added Settings view with 4 engine status cards + statistics
+- Added Ask AI/Daily Recap view with dark gradient hero + period selector + AI chat
+- Added Collections view with icon/color picker + collection grid + CRUD
+- Added desktop nav bar + mobile bottom nav
+- Enhanced Command Palette with Navigate group
+- All views animate smoothly with Framer Motion AnimatePresence
+- Lint passes, zero errors, all features browser-verified
