@@ -16,10 +16,19 @@ export async function PATCH(
     if (color !== undefined) updateData.color = color
     if (icon !== undefined) updateData.icon = icon
 
-    const collection = await db.collection.update({
-      where: { id },
-      data: updateData,
-    })
+    let collection
+    try {
+      collection = await db.collection.update({
+        where: { id },
+        data: updateData,
+      })
+    } catch (prismaErr) {
+      console.error('Prisma fallback failed:', prismaErr instanceof Error ? prismaErr.message : 'Unknown')
+      return NextResponse.json(
+        { error: 'Database not configured. Please set NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, and SUPABASE_SERVICE_ROLE_KEY in your Vercel environment variables.' },
+        { status: 503 }
+      )
+    }
 
     return NextResponse.json({
       id: collection.id,
@@ -42,9 +51,17 @@ export async function DELETE(
   try {
     const { id } = await params
 
-    await db.collection.delete({
-      where: { id },
-    })
+    try {
+      await db.collection.delete({
+        where: { id },
+      })
+    } catch (prismaErr) {
+      console.error('Prisma fallback failed:', prismaErr instanceof Error ? prismaErr.message : 'Unknown')
+      return NextResponse.json(
+        { error: 'Database not configured. Please set NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, and SUPABASE_SERVICE_ROLE_KEY in your Vercel environment variables.' },
+        { status: 503 }
+      )
+    }
 
     return NextResponse.json({ success: true })
   } catch (error) {

@@ -4,12 +4,21 @@ import { db } from '@/lib/db'
 // GET /api/profile - Get the user profile
 export async function GET() {
   try {
-    let profile = await db.profile.findFirst()
-    if (!profile) {
-      // Create a default profile
-      profile = await db.profile.create({
-        data: { name: 'Aether User', email: 'user@aether.app' },
-      })
+    let profile
+    try {
+      profile = await db.profile.findFirst()
+      if (!profile) {
+        // Create a default profile
+        profile = await db.profile.create({
+          data: { name: 'Aether User', email: 'user@aether.app' },
+        })
+      }
+    } catch (prismaErr) {
+      console.error('Prisma fallback failed:', prismaErr instanceof Error ? prismaErr.message : 'Unknown')
+      return NextResponse.json(
+        { error: 'Database not configured. Please set NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, and SUPABASE_SERVICE_ROLE_KEY in your Vercel environment variables.' },
+        { status: 503 }
+      )
     }
     return NextResponse.json({
       id: profile.id,
@@ -31,27 +40,36 @@ export async function PATCH(req: NextRequest) {
     const body = await req.json()
     const { name, email, darkMode, plan } = body
 
-    let profile = await db.profile.findFirst()
-    if (!profile) {
-      profile = await db.profile.create({
-        data: {
-          name: name || 'Aether User',
-          email: email || 'user@aether.app',
-          darkMode: darkMode ?? false,
-          plan: plan || 'free',
-        },
-      })
-    } else {
-      const updateData: Record<string, unknown> = {}
-      if (name !== undefined) updateData.name = name
-      if (email !== undefined) updateData.email = email
-      if (darkMode !== undefined) updateData.darkMode = darkMode
-      if (plan !== undefined) updateData.plan = plan
+    let profile
+    try {
+      profile = await db.profile.findFirst()
+      if (!profile) {
+        profile = await db.profile.create({
+          data: {
+            name: name || 'Aether User',
+            email: email || 'user@aether.app',
+            darkMode: darkMode ?? false,
+            plan: plan || 'free',
+          },
+        })
+      } else {
+        const updateData: Record<string, unknown> = {}
+        if (name !== undefined) updateData.name = name
+        if (email !== undefined) updateData.email = email
+        if (darkMode !== undefined) updateData.darkMode = darkMode
+        if (plan !== undefined) updateData.plan = plan
 
-      profile = await db.profile.update({
-        where: { id: profile.id },
-        data: updateData,
-      })
+        profile = await db.profile.update({
+          where: { id: profile.id },
+          data: updateData,
+        })
+      }
+    } catch (prismaErr) {
+      console.error('Prisma fallback failed:', prismaErr instanceof Error ? prismaErr.message : 'Unknown')
+      return NextResponse.json(
+        { error: 'Database not configured. Please set NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, and SUPABASE_SERVICE_ROLE_KEY in your Vercel environment variables.' },
+        { status: 503 }
+      )
     }
 
     return NextResponse.json({

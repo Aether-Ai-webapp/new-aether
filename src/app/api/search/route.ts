@@ -51,32 +51,38 @@ async function keywordSearch(query: string, limit: number) {
   if (words.length === 0) return []
 
   // Get all memories and score them locally
-  const allMemories = await db.memory.findMany({
-    select: {
-      id: true,
-      type: true,
-      title: true,
-      content: true,
-      summary: true,
-      deepInsight: true,
-      tags: true,
-      sourceUrl: true,
-      imageUrl: true,
-      imagePreview: true,
-      isFavorite: true,
-      createdAt: true,
-      updatedAt: true,
-      collections: {
-        include: {
-          collection: {
-            select: { id: true, name: true, color: true, icon: true },
+  let allMemories
+  try {
+    allMemories = await db.memory.findMany({
+      select: {
+        id: true,
+        type: true,
+        title: true,
+        content: true,
+        summary: true,
+        deepInsight: true,
+        tags: true,
+        sourceUrl: true,
+        imageUrl: true,
+        imagePreview: true,
+        isFavorite: true,
+        createdAt: true,
+        updatedAt: true,
+        collections: {
+          include: {
+            collection: {
+              select: { id: true, name: true, color: true, icon: true },
+            },
           },
         },
       },
-    },
-    take: 200,
-    orderBy: { createdAt: 'desc' },
-  })
+      take: 200,
+      orderBy: { createdAt: 'desc' },
+    })
+  } catch (prismaErr) {
+    console.error('Prisma fallback failed:', prismaErr instanceof Error ? prismaErr.message : 'Unknown')
+    throw prismaErr
+  }
 
   // Score each memory based on keyword matches
   const scored = allMemories.map(memory => {
@@ -244,7 +250,16 @@ export async function GET(req: NextRequest) {
     }
 
     // ── PATH B: Keyword Search Fallback (Prisma, always works) ──────
-    const results = await keywordSearch(query, limit)
+    let results
+    try {
+      results = await keywordSearch(query, limit)
+    } catch (prismaErr) {
+      console.error('Prisma fallback failed:', prismaErr instanceof Error ? prismaErr.message : 'Unknown')
+      return NextResponse.json(
+        { error: 'Database not configured. Please set NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, and SUPABASE_SERVICE_ROLE_KEY in your Vercel environment variables.' },
+        { status: 503 }
+      )
+    }
 
     return NextResponse.json({
       results,

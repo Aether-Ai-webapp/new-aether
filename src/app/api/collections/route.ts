@@ -34,23 +34,31 @@ export async function GET() {
     }
 
     // Fallback: Prisma
-    const collections = await db.collection.findMany({
-      orderBy: { name: 'asc' },
-      include: {
-        _count: { select: { memories: true } },
-      },
-    })
+    try {
+      const collections = await db.collection.findMany({
+        orderBy: { name: 'asc' },
+        include: {
+          _count: { select: { memories: true } },
+        },
+      })
 
-    const result = collections.map((c) => ({
-      id: c.id,
-      name: c.name,
-      icon: c.icon,
-      color: c.color,
-      createdAt: c.createdAt.toISOString(),
-      memoryCount: c._count.memories,
-    }))
+      const result = collections.map((c) => ({
+        id: c.id,
+        name: c.name,
+        icon: c.icon,
+        color: c.color,
+        createdAt: c.createdAt.toISOString(),
+        memoryCount: c._count.memories,
+      }))
 
-    return NextResponse.json(result)
+      return NextResponse.json(result)
+    } catch (prismaErr) {
+      console.error('Prisma fallback failed:', prismaErr instanceof Error ? prismaErr.message : 'Unknown')
+      return NextResponse.json(
+        { error: 'Database not configured. Please set NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, and SUPABASE_SERVICE_ROLE_KEY in your Vercel environment variables.' },
+        { status: 503 }
+      )
+    }
   } catch (error) {
     console.error('Failed to fetch collections:', error)
     return NextResponse.json({ error: 'Failed to fetch collections' }, { status: 500 })
@@ -101,22 +109,30 @@ export async function POST(req: NextRequest) {
     }
 
     // Fallback: Prisma
-    const collection = await db.collection.create({
-      data: {
-        name: name.trim(),
-        color: color || '#6D597A',
-        icon: icon || '📁',
-      },
-    })
+    try {
+      const collection = await db.collection.create({
+        data: {
+          name: name.trim(),
+          color: color || '#6D597A',
+          icon: icon || '📁',
+        },
+      })
 
-    return NextResponse.json({
-      id: collection.id,
-      name: collection.name,
-      icon: collection.icon,
-      color: collection.color,
-      createdAt: collection.createdAt.toISOString(),
-      memoryCount: 0,
-    }, { status: 201 })
+      return NextResponse.json({
+        id: collection.id,
+        name: collection.name,
+        icon: collection.icon,
+        color: collection.color,
+        createdAt: collection.createdAt.toISOString(),
+        memoryCount: 0,
+      }, { status: 201 })
+    } catch (prismaErr) {
+      console.error('Prisma fallback failed:', prismaErr instanceof Error ? prismaErr.message : 'Unknown')
+      return NextResponse.json(
+        { error: 'Database not configured. Please set NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, and SUPABASE_SERVICE_ROLE_KEY in your Vercel environment variables.' },
+        { status: 503 }
+      )
+    }
   } catch (error) {
     console.error('Failed to create collection:', error)
     return NextResponse.json({ error: 'Failed to create collection' }, { status: 500 })

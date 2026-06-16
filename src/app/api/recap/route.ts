@@ -96,23 +96,31 @@ export async function GET(req: NextRequest) {
 
     // ── Prisma fallback ────────────────────────────────────────────────
     if (memories.length === 0) {
-      const prismaMemories = await db.memory.findMany({
-        where: {
-          createdAt: { gte: cutoff },
-        },
-        orderBy: { createdAt: 'desc' },
-        take: 50,
-      })
+      try {
+        const prismaMemories = await db.memory.findMany({
+          where: {
+            createdAt: { gte: cutoff },
+          },
+          orderBy: { createdAt: 'desc' },
+          take: 50,
+        })
 
-      memories = prismaMemories.map(m => ({
-        id: m.id,
-        type: m.type,
-        title: m.title,
-        content: m.content.slice(0, 300),
-        summary: m.summary,
-        tags: m.tags ? m.tags.split(',').filter(Boolean) : [],
-        createdAt: m.createdAt.toISOString(),
-      }))
+        memories = prismaMemories.map(m => ({
+          id: m.id,
+          type: m.type,
+          title: m.title,
+          content: m.content.slice(0, 300),
+          summary: m.summary,
+          tags: m.tags ? m.tags.split(',').filter(Boolean) : [],
+          createdAt: m.createdAt.toISOString(),
+        }))
+      } catch (prismaErr) {
+        console.error('Prisma fallback failed:', prismaErr instanceof Error ? prismaErr.message : 'Unknown')
+        return NextResponse.json(
+          { error: 'Database not configured. Please set NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, and SUPABASE_SERVICE_ROLE_KEY in your Vercel environment variables.' },
+          { status: 503 }
+        )
+      }
     }
 
     if (memories.length === 0) {

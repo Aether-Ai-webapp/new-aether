@@ -190,17 +190,26 @@ export async function GET(req: NextRequest) {
     const memoryId = searchParams.get('memoryId') // Get connections for a specific memory
 
     // Fetch all memories from Prisma
-    const allMemories = await db.memory.findMany({
-      select: {
-        id: true,
-        title: true,
-        type: true,
-        content: true,
-        tags: true,
-      },
-      orderBy: { createdAt: 'desc' },
-      take: 100,
-    })
+    let allMemories
+    try {
+      allMemories = await db.memory.findMany({
+        select: {
+          id: true,
+          title: true,
+          type: true,
+          content: true,
+          tags: true,
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 100,
+      })
+    } catch (prismaErr) {
+      console.error('Prisma fallback failed:', prismaErr instanceof Error ? prismaErr.message : 'Unknown')
+      return NextResponse.json(
+        { error: 'Database not configured. Please set NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, and SUPABASE_SERVICE_ROLE_KEY in your Vercel environment variables.' },
+        { status: 503 }
+      )
+    }
 
     if (allMemories.length === 0) {
       return NextResponse.json({ connections: [], clusters: [], relatedMemories: [] })

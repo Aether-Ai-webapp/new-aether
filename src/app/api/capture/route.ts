@@ -833,44 +833,52 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // ── PRISMA FALLBACK (always works) ─────────────────────────────
-    const memory = await saveToPrisma({
-      type: memoryType,
-      title: hasText ? text.slice(0, 80) : hasUrl ? 'Saved Link' : hasAudio ? 'Voice Note' : 'Image Capture',
-      content: rawContent,
-      summary: null, // Will be filled by background enrichment
-      deepInsight: null,
-      tags: instantTags,
-      sourceUrl: hasUrl ? url.trim() : null,
-      imageUrl: null,
-      imagePreview: null,
-      recap: null,
-    })
+    // ── PRISMA FALLBACK (local dev only — SQLite won't work on Vercel) ──
+    try {
+      const memory = await saveToPrisma({
+        type: memoryType,
+        title: hasText ? text.slice(0, 80) : hasUrl ? 'Saved Link' : hasAudio ? 'Voice Note' : 'Image Capture',
+        content: rawContent,
+        summary: null, // Will be filled by background enrichment
+        deepInsight: null,
+        tags: instantTags,
+        sourceUrl: hasUrl ? url.trim() : null,
+        imageUrl: null,
+        imagePreview: null,
+        recap: null,
+      })
 
-    savedMemoryId = memory.id
-    savedMemory = {
-      ...memory,
-      enriching: true, // Signal to frontend that AI enrichment is pending
+      savedMemoryId = memory.id
+      savedMemory = {
+        ...memory,
+        enriching: true, // Signal to frontend that AI enrichment is pending
+      }
+
+      // ── INSTANT RETURN — user sees memory immediately ────────────────
+      const response = NextResponse.json({ success: true, memory: savedMemory })
+
+      // ── BACKGROUND ENRICHMENT (fire and forget) ──────────────────────
+      backgroundEnrichMemory(
+        savedMemoryId,
+        rawContent,
+        memoryType,
+        hasImage ? imageFile : null,
+        hasAudio ? audioFile : null,
+        hasUrl,
+        url,
+        supabaseUserId
+      ).catch(err => {
+        console.error('[Background Enrichment] Unhandled error:', err instanceof Error ? err.message : 'Unknown')
+      })
+
+      return response
+    } catch (prismaErr) {
+      console.error('Prisma fallback also failed:', prismaErr instanceof Error ? prismaErr.message : 'Unknown')
+      return NextResponse.json(
+        { error: 'Database not configured for production. Please set NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, and SUPABASE_SERVICE_ROLE_KEY in your Vercel environment variables.' },
+        { status: 503 }
+      )
     }
-
-    // ── INSTANT RETURN — user sees memory immediately ────────────────
-    const response = NextResponse.json({ success: true, memory: savedMemory })
-
-    // ── BACKGROUND ENRICHMENT (fire and forget) ──────────────────────
-    backgroundEnrichMemory(
-      savedMemoryId,
-      rawContent,
-      memoryType,
-      hasImage ? imageFile : null,
-      hasAudio ? audioFile : null,
-      hasUrl,
-      url,
-      supabaseUserId
-    ).catch(err => {
-      console.error('[Background Enrichment] Unhandled error:', err instanceof Error ? err.message : 'Unknown')
-    })
-
-    return response
   } catch (error) {
     console.error('Capture route error:', error)
     const message = error instanceof Error ? error.message : 'Internal server error'
