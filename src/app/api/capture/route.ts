@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
-import { getGeminiFlashModel, getGeminiEmbeddingModel, aiCache, isProviderCoolingDown, markProviderFailed } from '@/lib/ai-cache'
+import { getGeminiFlashModel, getGeminiEmbeddingModel, getGeminiKey, aiCache, isProviderCoolingDown, markProviderFailed } from '@/lib/ai-cache'
 
 // ═══════════════════════════════════════════════════════════════════════
 // ─── ULTRA-FAST CAPTURE ROUTE ────────────────────────────────────────
@@ -161,7 +161,7 @@ async function synthesizeWithGroq(rawContent: string): Promise<AISynthesis> {
 async function synthesizeWithLLM(rawContent: string): Promise<AISynthesis | null> {
   const promises: Promise<AISynthesis>[] = []
 
-  if (process.env.GEMINI_API_KEY && !isProviderCoolingDown('gemini')) {
+  if (getGeminiKey() && !isProviderCoolingDown('gemini')) {
     promises.push(
       synthesizeWithGemini(rawContent).catch(err => {
         const msg = err instanceof Error ? err.message : ''
@@ -206,7 +206,7 @@ interface ImageAnalysis {
 }
 
 async function analyzeImageWithVLM(imageFile: File): Promise<ImageAnalysis | null> {
-  if (!process.env.GEMINI_API_KEY || isProviderCoolingDown('gemini')) return null
+  if (!getGeminiKey() || isProviderCoolingDown('gemini')) return null
 
   try {
     const model = getGeminiFlashModel()
@@ -566,8 +566,9 @@ async function backgroundEnrichMemory(
       })()
     )
 
-    // Inline embedding (parallel with DB update)
-    if (process.env.GEMINI_API_KEY) {
+    // Inline embedding (parallel with DB update) — only when Supabase is configured
+    // (embeddings are stored in Supabase pgvector; Prisma/SQLite has no vector column)
+    if (getGeminiKey() && process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
       updatePromises.push(
         withTimeout(
           generateInlineEmbedding(memoryId, aiTitle, aiSummary, enrichedContent),

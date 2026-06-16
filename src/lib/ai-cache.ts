@@ -4,6 +4,16 @@ import { GoogleGenerativeAI } from '@google/generative-ai'
 // ─── SHARED AI CLIENT SINGLETONS ─────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
 
+/**
+ * Returns the Gemini API key, checking both server-only and public env vars.
+ * Reads GEMINI_API_KEY (server-only, preferred) then NEXT_PUBLIC_GEMINI_API_KEY.
+ */
+export function getGeminiKey(): string | null {
+  const k = process.env.GEMINI_API_KEY || process.env.NEXT_PUBLIC_GEMINI_API_KEY
+  if (!k || k.length < 10) return null
+  return k
+}
+
 let geminiClient: GoogleGenerativeAI | null = null
 let geminiFlashModel: ReturnType<GoogleGenerativeAI['getGenerativeModel']> | null = null
 let geminiEmbeddingModel: ReturnType<GoogleGenerativeAI['getGenerativeModel']> | null = null
@@ -11,12 +21,13 @@ let geminiEmbeddingModel: ReturnType<GoogleGenerativeAI['getGenerativeModel']> |
 /**
  * Returns a shared GoogleGenerativeAI singleton instance.
  * Lazily initialized on first call.
+ * @throws if no Gemini API key is configured.
  */
 export function getGeminiClient(): GoogleGenerativeAI {
   if (!geminiClient) {
-    const apiKey = process.env.GEMINI_API_KEY
+    const apiKey = getGeminiKey()
     if (!apiKey) {
-      throw new Error('GEMINI_API_KEY environment variable is not set')
+      throw new Error('Gemini API key not configured (set GEMINI_API_KEY or NEXT_PUBLIC_GEMINI_API_KEY)')
     }
     geminiClient = new GoogleGenerativeAI(apiKey)
   }

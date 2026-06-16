@@ -26,10 +26,16 @@ export async function POST(req: NextRequest) {
     // ── 1. Generate embedding with Gemini text-embedding-004 ──────────
     const geminiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY
     if (!geminiKey) {
-      return NextResponse.json(
-        { error: 'Gemini API key not configured' },
-        { status: 500 }
-      )
+      // No Gemini key — gracefully no-op (Prisma/SQLite has no vector column anyway).
+      return NextResponse.json({ success: true, memoryId, skipped: 'no_gemini_key' })
+    }
+
+    // ── Supabase is required to store embeddings (pgvector). ──
+    // In Prisma-only mode there's nowhere to store a vector, so no-op gracefully.
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+    if (!supabaseUrl || !serviceRoleKey || serviceRoleKey === 'your_supabase_service_role_key_here') {
+      return NextResponse.json({ success: true, memoryId, skipped: 'no_supabase' })
     }
 
     let embeddingVector: number[]

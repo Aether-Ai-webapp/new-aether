@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
-import { aiCache, CACHE_KEYS, CACHE_TTL, getGeminiFlashModel, isProviderCoolingDown, markProviderFailed } from '@/lib/ai-cache'
+import { aiCache, CACHE_KEYS, CACHE_TTL, getGeminiFlashModel, getGeminiKey, isProviderCoolingDown, markProviderFailed } from '@/lib/ai-cache'
 
 // ═══════════════════════════════════════════════════════════════════════
 // ─── AI BRAIN: FIND CONNECTIONS BETWEEN MEMORIES (ULTRA-FAST) ────────
@@ -262,7 +262,7 @@ export async function GET(req: NextRequest) {
 
     // ── Try LLM deep analysis as enhancement (with timeout) ─────────
     // Only if we have enough memories AND a Gemini API key AND not in cooldown
-    if (memoryNodes.length >= 5 && process.env.GEMINI_API_KEY && !isProviderCoolingDown('gemini')) {
+    if (memoryNodes.length >= 5 && getGeminiKey() && !isProviderCoolingDown('gemini')) {
       const llmClusters = await deepAnalysisWithLLM(memoryNodes)
       if (llmClusters && llmClusters.length > 0) {
         const llmNames = new Set(llmClusters.map(c => c.name.toLowerCase()))

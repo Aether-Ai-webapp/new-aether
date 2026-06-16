@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
-import { aiCache, CACHE_KEYS, CACHE_TTL, getGeminiFlashModel, isProviderCoolingDown, markProviderFailed } from '@/lib/ai-cache'
+import { aiCache, CACHE_KEYS, CACHE_TTL, getGeminiFlashModel, getGeminiKey, isProviderCoolingDown, markProviderFailed } from '@/lib/ai-cache'
 
 // ═══════════════════════════════════════════════════════════════════════
 // ─── AI DAILY RECAP GENERATOR — ULTRA-FAST ──────────────────────────
@@ -130,7 +130,7 @@ export async function GET(req: NextRequest) {
     const aiPromises: Promise<string>[] = []
 
     // PROVIDER 1: Gemini Flash (shared singleton client) — skip if cooling down
-    const geminiKey = process.env.GEMINI_API_KEY
+    const geminiKey = getGeminiKey()
     if (geminiKey && !isProviderCoolingDown('gemini')) {
       const memorySummaries = memories.map(m => {
         const parts = [`[${m.type}] "${m.title || 'Untitled'}"`]
