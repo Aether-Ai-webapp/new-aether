@@ -24,6 +24,7 @@ import {
   Volume2,
   AlertTriangle,
   Lock,
+  Zap,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
@@ -118,7 +119,6 @@ export function Dashboard() {
 
   // ── Local State ──────────────────────────────────────────────────
   const [captureText, setCaptureText] = useState('')
-  const [isSaving, setIsSaving] = useState(false)
   const [showCaptureAnimation, setShowCaptureAnimation] = useState(false)
 
   // Voice recording state
@@ -167,7 +167,7 @@ export function Dashboard() {
   }, [isAuthenticated, setShowAuthModal])
 
   // ═════════════════════════════════════════════════════════════════
-  // ─── THE UNIVERSAL CAPTURE SUBMIT ────────────────────────────────
+  // ─── THE UNIVERSAL CAPTURE SUBMIT (Optimistic UI) ────────────────
   // ═════════════════════════════════════════════════════════════════
   const handleCaptureSubmit = useCallback(async () => {
     if (!gateCapture()) return
@@ -177,8 +177,40 @@ export function Dashboard() {
 
     if (!text && !image) return
 
-    setIsSaving(true)
+    // ── OPTIMISTIC UI: Create temporary mock memory instantly ────────
+    const tempId = `temp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+    const detected = image?.file ? 'image' : detectContentType(text || 'note')
+    const memoryType = image?.file ? 'image' : mapToMemoryType(detected)
+
+    const optimisticMemory: Memory = {
+      id: tempId,
+      type: memoryType as MemoryType,
+      title: text.slice(0, 80) || 'Image capture',
+      content: text || 'Image capture',
+      summary: 'Extracting insights...',
+      deepInsight: null,
+      tags: [],
+      sourceUrl: detected === 'link' ? text : null,
+      fileUrl: null,
+      imagePreview: image?.url || null,
+      imageUrl: image?.url || null,
+      recap: null,
+      isFavorite: false,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      collections: [],
+      _optimistic: true as unknown as undefined, // type-safe marker
+    }
+
+    // Prepend to store IMMEDIATELY — user sees it within milliseconds
+    addMemory(optimisticMemory)
     setShowCaptureAnimation(true)
+
+    // Clear input instantly
+    setCaptureText('')
+    setImagePreview(null)
+    if (fileInputRef.current) fileInputRef.current.value = ''
+    setTimeout(() => inputRef.current?.focus(), 50)
 
     try {
       const formData = new FormData()
@@ -191,8 +223,7 @@ export function Dashboard() {
         formData.append('image', image.file)
         formData.append('type', 'image')
       } else {
-        const detected = detectContentType(text || 'note')
-        formData.append('type', mapToMemoryType(detected))
+        formData.append('type', memoryType)
 
         if (detected === 'link') {
           formData.append('url', text.trim())
@@ -213,28 +244,24 @@ export function Dashboard() {
       const data = await response.json()
 
       if (data.success && data.memory) {
-        const newMemory = data.memory as Memory
-        addMemory(newMemory)
+        const realMemory = data.memory as Memory
+        // Replace the optimistic mock with the real server-persisted memory
+        // The real memory will have `enriching: true` if AI is still running
+        deleteMemory(tempId)
+        addMemory(realMemory)
       }
-
-      setCaptureText('')
-      setImagePreview(null)
-      if (fileInputRef.current) fileInputRef.current.value = ''
-
-      setTimeout(() => {
-        inputRef.current?.focus()
-      }, 50)
 
       toast.success('Memory captured')
     } catch (error) {
+      // On failure: remove the optimistic mock from the store
+      deleteMemory(tempId)
       console.error('[Dashboard] Capture failed:', error)
       const message = error instanceof Error ? error.message : 'Failed to save — please try again'
       toast.error(message)
     } finally {
-      setIsSaving(false)
       setTimeout(() => setShowCaptureAnimation(false), 300)
     }
-  }, [captureText, imagePreview, addMemory, gateCapture])
+  }, [captureText, imagePreview, addMemory, deleteMemory, gateCapture])
 
   // ═════════════════════════════════════════════════════════════════
   // ─── VOICE RECORDING ─────────────────────────────────────────────
@@ -270,6 +297,31 @@ export function Dashboard() {
         const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' })
         setIsTranscribing(true)
 
+        // ── OPTIMISTIC: Show voice note instantly ────────────────────
+        const tempId = `temp_voice_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+        const optimisticVoice: Memory = {
+          id: tempId,
+          type: 'voice',
+          title: 'Voice Note',
+          content: captureText.trim() || 'Voice recording...',
+          summary: 'Transcribing audio...',
+          deepInsight: null,
+          tags: [],
+          sourceUrl: null,
+          fileUrl: null,
+          imagePreview: null,
+          imageUrl: null,
+          recap: null,
+          isFavorite: false,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          collections: [],
+        }
+        addMemory(optimisticVoice)
+        setCaptureText('')
+        setImagePreview(null)
+        if (fileInputRef.current) fileInputRef.current.value = ''
+
         try {
           const formData = new FormData()
           formData.append('audio', audioBlob, 'recording.webm')
@@ -288,16 +340,17 @@ export function Dashboard() {
           if (response.ok) {
             const data = await response.json()
             if (data.success && data.memory) {
+              // Replace optimistic with real memory
+              deleteMemory(tempId)
               addMemory(data.memory as Memory)
             }
-            setCaptureText('')
-            setImagePreview(null)
-            if (fileInputRef.current) fileInputRef.current.value = ''
             toast.success('Voice memory captured')
           } else {
+            deleteMemory(tempId)
             toast.error('Voice capture failed')
           }
         } catch {
+          deleteMemory(tempId)
           toast.error('Voice capture failed')
         } finally {
           setIsTranscribing(false)
@@ -310,7 +363,7 @@ export function Dashboard() {
     } catch {
       toast.error('Microphone access denied')
     }
-  }, [captureText, addMemory])
+  }, [captureText, addMemory, deleteMemory])
 
   const stopRecording = useCallback(() => {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
@@ -458,7 +511,7 @@ export function Dashboard() {
               {/* Mic button */}
               <button
                 onClick={handleMicClick}
-                disabled={isTranscribing || isSaving}
+                disabled={isTranscribing}
                 className={cn(
                   'size-9 rounded-xl flex items-center justify-center transition-all shrink-0',
                   isRecording
@@ -485,7 +538,6 @@ export function Dashboard() {
                 onChange={(e) => setCaptureText(e.target.value)}
                 onKeyDown={handleKeyDown}
                 placeholder={isAuthenticated ? 'Capture a thought...' : 'Sign in to capture memories...'}
-                disabled={isSaving}
                 className="flex-1 bg-transparent text-sm text-gray-800 placeholder:text-gray-300 outline-none min-w-0 py-1.5 px-1"
               />
 
@@ -495,7 +547,6 @@ export function Dashboard() {
                   if (!gateCapture()) return
                   fileInputRef.current?.click()
                 }}
-                disabled={isSaving}
                 className="size-9 rounded-xl flex items-center justify-center text-gray-400 hover:bg-gray-50 hover:text-gray-600 transition-all shrink-0"
               >
                 <ImageIcon className="size-4" />
@@ -511,7 +562,7 @@ export function Dashboard() {
               {/* Send button */}
               <button
                 onClick={handleCaptureSubmit}
-                disabled={(!captureText.trim() && !imagePreview) || isSaving}
+                disabled={!captureText.trim() && !imagePreview}
                 className={cn(
                   'size-9 rounded-xl flex items-center justify-center transition-all shrink-0',
                   captureText.trim() || imagePreview
@@ -519,11 +570,7 @@ export function Dashboard() {
                     : 'bg-gray-100 text-gray-400'
                 )}
               >
-                {isSaving ? (
-                  <Loader2 className="size-4 animate-spin" />
-                ) : (
-                  <Send className="size-4" />
-                )}
+                <Send className="size-4" />
               </button>
             </div>
           </div>
@@ -572,6 +619,7 @@ export function Dashboard() {
                   const detected = detectContentType(memory.content || memory.title)
                   const IconComponent = typeIconMap[memory.type] || typeIconMap[detected] || FileText
                   const staggerDelay = Math.min(index * 0.03, 0.15)
+                  const isEnriching = (memory as Memory & { enriching?: boolean }).enriching || memory.id.startsWith('temp_')
 
                   return (
                     <motion.button
@@ -581,20 +629,41 @@ export function Dashboard() {
                       exit={{ opacity: 0, y: -6 }}
                       transition={{ duration: 0.2, delay: staggerDelay, ease: 'easeOut' }}
                       onClick={() => openDrawer(memory)}
-                      className="w-full flex items-center gap-3 py-3.5 px-1 text-left group hover:bg-black/[0.015] rounded-lg transition-colors"
+                      className={cn(
+                        "w-full flex items-center gap-3 py-3.5 px-1 text-left group hover:bg-black/[0.015] rounded-lg transition-colors",
+                        isEnriching && "bg-purple-50/30"
+                      )}
                     >
                       <div className="shrink-0 size-8 flex items-center justify-center">
-                        <IconComponent className="size-4 text-gray-300 group-hover:text-gray-400 transition-colors" />
+                        {isEnriching ? (
+                          <motion.div
+                            animate={{ rotate: 360 }}
+                            transition={{ duration: 2, repeat: Infinity, ease: 'linear' }}
+                          >
+                            <Sparkles className="size-4 text-purple-400" />
+                          </motion.div>
+                        ) : (
+                          <IconComponent className="size-4 text-gray-300 group-hover:text-gray-400 transition-colors" />
+                        )}
                       </div>
                       <div className="flex-1 min-w-0">
                         <p className="text-sm text-gray-800 line-clamp-2 leading-snug">
                           {memory.title || memory.content}
                         </p>
-                        {memory.summary && (
+                        {isEnriching ? (
+                          <div className="flex items-center gap-1.5 mt-0.5">
+                            <motion.div
+                              className="h-2 w-20 rounded-full bg-purple-100"
+                              animate={{ opacity: [0.5, 1, 0.5] }}
+                              transition={{ duration: 1.5, repeat: Infinity, ease: 'easeInOut' }}
+                            />
+                            <span className="text-[10px] text-purple-400 font-medium">AI enriching...</span>
+                          </div>
+                        ) : memory.summary ? (
                           <p className="text-xs text-gray-400 line-clamp-1 mt-0.5">
                             {memory.summary}
                           </p>
-                        )}
+                        ) : null}
                         {memory.tags && memory.tags.length > 0 && (
                           <div className="flex gap-1 mt-1">
                             {memory.tags.slice(0, 3).map((tag) => (

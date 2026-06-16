@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useRef, useCallback } from 'react'
-import { useAetherStore, type Memory } from '@/lib/aether-store'
+import { useAetherStore, type Memory, type MemoryType } from '@/lib/aether-store'
 
 // ═══════════════════════════════════════════════════════════════════════
 // ─── TYPES ──────────────────────────────────────────────────────────
@@ -11,6 +11,7 @@ export interface CaptureResult {
   success: boolean
   memory?: Memory
   error?: string
+  optimisticId?: string // The temp ID used for optimistic UI
 }
 
 export interface UseCaptureReturn {
@@ -38,11 +39,49 @@ export interface UseCaptureReturn {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// ─── OPTIMISTIC UI HELPER ───────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════
+
+function generateTempId(): string {
+  return `temp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+}
+
+function createOptimisticMemory(
+  type: MemoryType,
+  title: string,
+  content: string,
+  imageUrl?: string | null,
+  sourceUrl?: string | null,
+): { id: string; memory: Memory } {
+  const tempId = generateTempId()
+  const memory: Memory = {
+    id: tempId,
+    type,
+    title: title || (type === 'image' ? 'Image capture' : type === 'voice' ? 'Voice Note' : type === 'link' ? 'Saved Link' : 'New Thought'),
+    content: content || title,
+    summary: 'AI analyzing...',
+    deepInsight: null,
+    tags: [],
+    sourceUrl: sourceUrl || null,
+    fileUrl: null,
+    imagePreview: imageUrl || null,
+    imageUrl: imageUrl || null,
+    recap: null,
+    isFavorite: false,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    collections: [],
+  }
+  return { id: tempId, memory }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // ─── HOOK ───────────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
 
 export function useCapture(): UseCaptureReturn {
   const addMemory = useAetherStore((s) => s.addMemory)
+  const deleteMemory = useAetherStore((s) => s.deleteMemory)
 
   // Common state
   const [isCapturing, setIsCapturing] = useState(false)
@@ -56,8 +95,25 @@ export function useCapture(): UseCaptureReturn {
   const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const resolvedAudioRef = useRef<((blob: Blob | null) => void) | null>(null)
 
-  // ── Helper: post FormData to /api/capture, add memory to store ──────
-  const postCapture = useCallback(async (formData: FormData): Promise<CaptureResult> => {
+  // ── Helper: post FormData to /api/capture with Optimistic UI ──────
+  const postCapture = useCallback(async (
+    formData: FormData,
+    optimisticType: MemoryType,
+    optimisticTitle: string,
+    optimisticContent: string,
+    optimisticImageUrl?: string | null,
+    optimisticSourceUrl?: string | null,
+  ): Promise<CaptureResult> => {
+    // ── OPTIMISTIC: Create temp memory and add to store instantly ────
+    const { id: tempId, memory: optimisticMemory } = createOptimisticMemory(
+      optimisticType,
+      optimisticTitle,
+      optimisticContent,
+      optimisticImageUrl,
+      optimisticSourceUrl,
+    )
+    addMemory(optimisticMemory)
+
     try {
       setCaptureError(null)
 
@@ -75,18 +131,24 @@ export function useCapture(): UseCaptureReturn {
       const data = await response.json()
 
       if (data.success && data.memory) {
-        const newMemory = data.memory as Memory
-        addMemory(newMemory)
-        return { success: true, memory: newMemory }
+        const realMemory = data.memory as Memory
+        // Replace optimistic mock with real server-persisted memory
+        deleteMemory(tempId)
+        addMemory(realMemory)
+        return { success: true, memory: realMemory, optimisticId: tempId }
       }
 
-      return { success: false, error: 'No memory returned from server' }
+      // No memory returned — remove optimistic mock
+      deleteMemory(tempId)
+      return { success: false, error: 'No memory returned from server', optimisticId: tempId }
     } catch (err) {
+      // On failure: remove the optimistic mock from the store
+      deleteMemory(tempId)
       const message = err instanceof Error ? err.message : 'Capture failed'
       setCaptureError(message)
-      return { success: false, error: message }
+      return { success: false, error: message, optimisticId: tempId }
     }
-  }, [addMemory])
+  }, [addMemory, deleteMemory])
 
   // ── Text Capture ───────────────────────────────────────────────────
   const captureText = useCallback(async (title: string, content: string): Promise<CaptureResult> => {
@@ -96,9 +158,8 @@ export function useCapture(): UseCaptureReturn {
     try {
       const formData = new FormData()
       formData.append('type', 'text')
-      formData.append('title', title.trim() || 'Untitled Note')
       formData.append('text', content.trim())
-      return await postCapture(formData)
+      return await postCapture(formData, 'text', title || content.slice(0, 60), content)
     } finally {
       setIsCapturing(false)
     }
@@ -113,9 +174,15 @@ export function useCapture(): UseCaptureReturn {
       const formData = new FormData()
       formData.append('type', 'link')
       formData.append('url', url.trim())
-      if (title?.trim()) formData.append('title', title.trim())
       if (notes?.trim()) formData.append('text', notes.trim())
-      return await postCapture(formData)
+      return await postCapture(
+        formData,
+        'link',
+        title || url.slice(0, 60),
+        notes || url,
+        null,
+        url,
+      )
     } finally {
       setIsCapturing(false)
     }
@@ -127,11 +194,18 @@ export function useCapture(): UseCaptureReturn {
 
     setIsCapturing(true)
     try {
+      // Create a local preview URL for optimistic display
+      const previewUrl = URL.createObjectURL(file)
       const formData = new FormData()
       formData.append('type', 'image')
       formData.append('image', file)
-      if (title?.trim()) formData.append('title', title.trim())
-      return await postCapture(formData)
+      return await postCapture(
+        formData,
+        'image',
+        title || 'Image capture',
+        title || 'Image capture',
+        previewUrl,
+      )
     } finally {
       setIsCapturing(false)
     }
@@ -147,8 +221,13 @@ export function useCapture(): UseCaptureReturn {
       formData.append('type', 'voice')
       const audioFile = new File([audioBlob], 'recording.webm', { type: audioBlob.type || 'audio/webm' })
       formData.append('audio', audioFile)
-      if (title?.trim()) formData.append('title', title.trim())
-      return await postCapture(formData)
+      if (title?.trim()) formData.append('text', title.trim())
+      return await postCapture(
+        formData,
+        'voice',
+        title || 'Voice Note',
+        title || 'Voice recording...',
+      )
     } finally {
       setIsCapturing(false)
     }

@@ -551,8 +551,170 @@ async function findConnectedMemories(
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// ─── BACKGROUND ENRICHMENT WORKER ────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════
+// This function runs AFTER the response is sent. It performs all the
+// expensive AI operations (LLM synthesis, VLM analysis, transcription)
+// and then updates the database row with the enriched data.
+
+async function backgroundEnrichMemory(
+  memoryId: string,
+  rawContent: string,
+  memoryType: string,
+  imageFile: File | null,
+  audioFile: File | null,
+  hasUrl: boolean,
+  url: string,
+  supabaseUserId: string | null
+): Promise<void> {
+  try {
+    // ── 1. Audio transcription (if voice capture) ──────────────────
+    let audioTranscript = ''
+    if (audioFile && audioFile.size > 0) {
+      audioTranscript = await transcribeAudio(audioFile)
+    }
+
+    // ── 2. Image analysis (if image capture) ───────────────────────
+    let imageAnalysis: ImageAnalysis | null = null
+    if (imageFile && imageFile.size > 0) {
+      imageAnalysis = await analyzeImageWithVLM(imageFile)
+    }
+
+    // ── 3. Build enriched content ──────────────────────────────────
+    let enrichedContent = rawContent
+    if (audioTranscript) {
+      enrichedContent += (enrichedContent ? '\n\n' : '') + `Voice Transcript:\n${audioTranscript}`
+    }
+    if (imageAnalysis) {
+      const imageContentParts: string[] = []
+      if (imageAnalysis.description) imageContentParts.push(imageAnalysis.description)
+      if (imageAnalysis.extracted_text) imageContentParts.push(`Text in image: ${imageAnalysis.extracted_text}`)
+      if (imageAnalysis.objects.length > 0) imageContentParts.push(`Objects: ${imageAnalysis.objects.join(', ')}`)
+      if (imageContentParts.length > 0) {
+        enrichedContent += (enrichedContent ? '\n\n' : '') + imageContentParts.join('\n\n')
+      }
+    }
+
+    // ── 4. AI Cognitive Synthesis ──────────────────────────────────
+    const synthesis = await synthesizeWithLLM(enrichedContent)
+
+    let aiTitle: string | null = null
+    let aiSummary: string | null = null
+    let aiDeepInsight: string | null = null
+    let aiTags = autoGenerateTags(enrichedContent, rawContent.slice(0, 80))
+    let connectedThemes: string[] = []
+
+    if (synthesis) {
+      aiTitle = synthesis.suggested_title
+      aiSummary = synthesis.summary
+      aiDeepInsight = synthesis.deep_insight
+      if (synthesis.tags.length > 0) {
+        const allTags = [...new Set([...synthesis.tags, ...aiTags])]
+        aiTags = allTags.slice(0, 6)
+      }
+      if (synthesis.connected_themes.length > 0) {
+        connectedThemes = synthesis.connected_themes
+      }
+    }
+
+    // Merge VLM tags
+    if (imageAnalysis && imageAnalysis.tags.length > 0) {
+      const allTags = [...new Set([...aiTags, ...imageAnalysis.tags.map(t => t.toLowerCase())])]
+      aiTags = allTags.slice(0, 6)
+    }
+
+    // ── 5. Upload image to Supabase Storage (if applicable) ────────
+    let uploadedImageUrl: string | null = null
+    if (imageFile && imageFile.size > 0 && supabaseUserId && isSupabaseConfigured()) {
+      try {
+        const supabase = await getSupabaseRouteClient()
+        uploadedImageUrl = await uploadImageToStorage(imageFile, supabaseUserId, supabase)
+      } catch (err) {
+        console.warn('Background image upload failed:', err instanceof Error ? err.message : 'Unknown')
+      }
+    }
+
+    // ── 6. Update database with enriched data ─────────────────────
+    const updateData: Record<string, unknown> = {
+      content: enrichedContent,
+      tags: aiTags.join(','),
+    }
+    if (aiTitle) updateData.title = aiTitle
+    if (aiSummary) updateData.summary = aiSummary
+    if (aiDeepInsight) updateData.deep_insight = aiDeepInsight
+    if (uploadedImageUrl) updateData.image_url = uploadedImageUrl
+
+    // Try Supabase update first
+    if (supabaseUserId && isSupabaseConfigured()) {
+      try {
+        const supabase = await getSupabaseRouteClient()
+        const { error } = await supabase
+          .from('memories')
+          .update(updateData)
+          .eq('id', memoryId)
+
+        if (!error) {
+          // Collection tag matching
+          await matchOrCreateCollections(supabase, supabaseUserId, memoryId, aiTags)
+
+          // Trigger embedding generation in background
+          try {
+            const embeddingContent = [aiTitle, aiSummary, enrichedContent].filter(Boolean).join(' ').slice(0, 2000)
+            await fetch('/api/generate-embedding', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ memoryId, content: embeddingContent }),
+            })
+          } catch {
+            // Non-blocking — embedding is nice-to-have
+          }
+
+          console.log(`[Background Enrichment] Memory ${memoryId} enriched successfully (Supabase)`)
+          return
+        }
+        console.warn('Supabase enrichment update failed:', error.message)
+      } catch (err) {
+        console.warn('Supabase enrichment failed, falling back to Prisma:', err instanceof Error ? err.message : 'Unknown')
+      }
+    }
+
+    // Prisma fallback for enrichment update
+    try {
+      const prismaUpdateData: Record<string, unknown> = {
+        content: enrichedContent,
+        tags: aiTags.join(','),
+      }
+      if (aiTitle) prismaUpdateData.title = aiTitle
+      if (aiSummary) prismaUpdateData.summary = aiSummary
+      if (aiDeepInsight) prismaUpdateData.deepInsight = aiDeepInsight
+      if (uploadedImageUrl) prismaUpdateData.imageUrl = uploadedImageUrl
+
+      await db.memory.update({
+        where: { id: memoryId },
+        data: prismaUpdateData,
+      })
+
+      console.log(`[Background Enrichment] Memory ${memoryId} enriched successfully (Prisma)`)
+    } catch (err) {
+      console.warn('Prisma enrichment update failed:', err instanceof Error ? err.message : 'Unknown')
+    }
+  } catch (err) {
+    console.error('[Background Enrichment] Fatal error:', err instanceof Error ? err.message : 'Unknown')
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // ─── MAIN POST HANDLER ──────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
+//
+// ARCHITECTURE: Immediate Ingestion + Asynchronous Enrichment
+//
+// 1. Parse FormData → validate → save raw row to DB → return instantly (~200ms)
+// 2. After response: fire background AI (LLM, VLM, ASR) → update row with enriched data
+//
+// The frontend uses Optimistic UI to show a placeholder immediately,
+// then replaces it with the real memory when the API responds, and
+// later updates it again when AI enrichment completes via polling or refetch.
 
 export async function POST(req: NextRequest) {
   try {
@@ -573,99 +735,41 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'No content provided' }, { status: 400 })
     }
 
-    // ── STEP 2: Process Audio → Transcript ──────────────────────────
-    let audioTranscript = ''
+    // ── STEP 2: Determine type & build raw content ─────────────────
     let memoryType: string = 'text'
-
-    if (hasAudio) {
-      memoryType = 'voice'
-      audioTranscript = await transcribeAudio(audioFile)
-    }
-
-    // ── STEP 3: Analyze Image with VLM ──────────────────────────────
-    let imageAnalysis: ImageAnalysis | null = null
-    let imageUrl: string | null = null
-
-    if (hasImage) {
-      memoryType = 'image'
-      // Run VLM analysis on the image (always works)
-      imageAnalysis = await analyzeImageWithVLM(imageFile)
-    }
-
-    // ── STEP 4: Assemble Raw Content ────────────────────────────────
-    let rawContent = ''
-    if (hasText) rawContent += text.trim()
-    if (hasUrl) rawContent += (rawContent ? '\n\n' : '') + `URL: ${url.trim()}`
-    if (audioTranscript) rawContent += (rawContent ? '\n\n' : '') + `Voice Transcript:\n${audioTranscript}`
-
-    // For images, use VLM description as content (not just "Image capture")
-    if (hasImage) {
-      if (imageAnalysis) {
-        const imageContentParts: string[] = []
-        if (imageAnalysis.description) imageContentParts.push(imageAnalysis.description)
-        if (imageAnalysis.extracted_text) imageContentParts.push(`Text in image: ${imageAnalysis.extracted_text}`)
-        if (imageAnalysis.objects.length > 0) imageContentParts.push(`Objects: ${imageAnalysis.objects.join(', ')}`)
-
-        const imageContent = imageContentParts.join('\n\n')
-        rawContent += (rawContent ? '\n\n' : '') + imageContent
-      } else if (!rawContent) {
-        rawContent = 'Image capture'
-      }
-    }
-
-    if (!rawContent) rawContent = 'Captured content'
-
+    if (hasAudio) memoryType = 'voice'
+    if (hasImage) memoryType = 'image'
     if (hasUrl) memoryType = 'link'
     if (hasAudio && hasImage) memoryType = 'voice'
     if (!hasAudio && !hasImage && !hasUrl) memoryType = 'text'
 
-    // ── STEP 5: AI Cognitive Synthesis (z-ai-web-dev-sdk LLM) ──────
-    // Determine initial title
-    let aiTitle = hasText ? text.slice(0, 80) : hasUrl ? 'Saved Link' : hasAudio ? 'Voice Note' : 'Image Capture'
-    let aiSummary: string | null = null
-    let aiDeepInsight: string | null = null
-    let aiTags = autoGenerateTags(rawContent, aiTitle) // keyword fallback always runs
-    let connectedThemes: string[] = []
+    // Build raw content from what we have immediately
+    let rawContent = ''
+    if (hasText) rawContent += text.trim()
+    if (hasUrl) rawContent += (rawContent ? '\n\n' : '') + `URL: ${url.trim()}`
+    if (hasImage && !rawContent) rawContent = 'Image capture'
+    if (hasAudio && !rawContent) rawContent = 'Voice note'
+    if (!rawContent) rawContent = 'Captured content'
 
-    // Always run LLM synthesis (z-ai-web-dev-sdk is always available)
-    const synthesis = await synthesizeWithLLM(rawContent)
-    if (synthesis) {
-      aiTitle = synthesis.suggested_title || aiTitle
-      aiSummary = synthesis.summary
-      aiDeepInsight = synthesis.deep_insight
-      if (synthesis.tags.length > 0) {
-        // Merge AI tags with keyword tags, deduplicate
-        const allTags = [...new Set([...synthesis.tags, ...aiTags])]
-        aiTags = allTags.slice(0, 6)
-      }
-      if (synthesis.connected_themes.length > 0) {
-        connectedThemes = synthesis.connected_themes
-      }
-    }
+    // ── STEP 3: Instant keyword-based tags (no AI, zero latency) ───
+    const instantTags = autoGenerateTags(rawContent, text.slice(0, 80))
 
-    // For images with VLM analysis, merge VLM tags too
-    if (imageAnalysis && imageAnalysis.tags.length > 0) {
-      const allTags = [...new Set([...aiTags, ...imageAnalysis.tags.map(t => t.toLowerCase())])]
-      aiTags = allTags.slice(0, 6)
-    }
+    // ── STEP 4: Immediate DB save (raw, no AI enrichment yet) ──────
+    let savedMemoryId: string
+    let supabaseUserId: string | null = null
+    let savedMemory: Record<string, unknown>
 
-    // ── STEP 6: Find Connected Memories (AI Brain) ─────────────────
-    let connectedMemories: { id: string; title: string; reason: string }[] = []
-    try {
-      connectedMemories = await findConnectedMemories(aiTags, rawContent, 'pending')
-    } catch {
-      // Non-critical — continue without connections
-    }
-
-    // ── STEP 7: Try Supabase first (cookie-aware route handler client) ──
+    // Try Supabase first
     if (isSupabaseConfigured()) {
       try {
         const supabase = await getSupabaseRouteClient()
         const { data: { user }, error: authError } = await supabase.auth.getUser()
 
         if (!authError && user) {
-          // Authenticated Supabase path
-          // Upload image if present
+          supabaseUserId = user.id
+
+          // Upload image immediately (storage is fast, doesn't need AI)
+          let imageUrl: string | null = null
           if (hasImage) {
             imageUrl = await uploadImageToStorage(imageFile, user.id, supabase)
           }
@@ -675,11 +779,11 @@ export async function POST(req: NextRequest) {
             .insert({
               user_id: user.id,
               type: memoryType,
-              title: aiTitle,
+              title: hasText ? text.slice(0, 80) : hasUrl ? 'Saved Link' : hasAudio ? 'Voice Note' : 'Image Capture',
               content: rawContent,
-              summary: aiSummary,
-              deep_insight: aiDeepInsight,
-              tags: aiTags.join(','),
+              summary: null, // Will be filled by background enrichment
+              deep_insight: null,
+              tags: instantTags.join(','),
               source_url: hasUrl ? url.trim() : null,
               image_url: imageUrl,
               image_preview: null,
@@ -691,15 +795,12 @@ export async function POST(req: NextRequest) {
             .single()
 
           if (!insertError && memoryRow) {
-            // Collection Tag Matching
-            await matchOrCreateCollections(supabase, user.id, (memoryRow as { id: string }).id, aiTags)
-
-            // Return memory object in the format the frontend expects
             const row = memoryRow as Record<string, unknown>
+            savedMemoryId = row.id as string
             const memoryCollections = (row.memory_collections as Array<{ collection_id: string; collections: { id: string; name: string; color: string; icon: string } }>) || []
 
-            const memory = {
-              id: row.id as string,
+            savedMemory = {
+              id: row.id,
               type: (row.type as string) || 'text',
               title: (row.title as string) || '',
               content: (row.content as string) || '',
@@ -720,44 +821,75 @@ export async function POST(req: NextRequest) {
                 color: mc.collections.color,
                 icon: mc.collections.icon,
               })),
-              connectedMemories,
-              connectedThemes,
+              enriching: true, // Signal to frontend that AI enrichment is pending
             }
 
-            return NextResponse.json({ success: true, memory })
+            // ── INSTANT RETURN — user sees memory immediately ────────
+            const response = NextResponse.json({ success: true, memory: savedMemory })
+
+            // ── BACKGROUND ENRICHMENT (fire and forget) ──────────────
+            // This runs AFTER the response is sent to the client
+            backgroundEnrichMemory(
+              savedMemoryId,
+              rawContent,
+              memoryType,
+              hasImage ? imageFile : null,
+              hasAudio ? audioFile : null,
+              hasUrl,
+              url,
+              supabaseUserId
+            ).catch(err => {
+              console.error('[Background Enrichment] Unhandled error:', err instanceof Error ? err.message : 'Unknown')
+            })
+
+            return response
           }
 
-          // If Supabase insert failed, fall through to Prisma
           console.warn('Supabase insert failed, falling back to Prisma:', insertError?.message)
         }
       } catch (err) {
-        // Supabase not working, fall through to Prisma
         console.warn('Supabase capture failed, falling back to Prisma:', err instanceof Error ? err.message : 'Unknown')
       }
     }
 
-    // ── STEP 8: Prisma Fallback (always works) ─────────────────────
+    // ── PRISMA FALLBACK (always works) ─────────────────────────────
     const memory = await saveToPrisma({
       type: memoryType,
-      title: aiTitle,
+      title: hasText ? text.slice(0, 80) : hasUrl ? 'Saved Link' : hasAudio ? 'Voice Note' : 'Image Capture',
       content: rawContent,
-      summary: aiSummary,
-      deepInsight: aiDeepInsight,
-      tags: aiTags,
+      summary: null, // Will be filled by background enrichment
+      deepInsight: null,
+      tags: instantTags,
       sourceUrl: hasUrl ? url.trim() : null,
-      imageUrl: imageUrl,
+      imageUrl: null,
       imagePreview: null,
       recap: null,
     })
 
-    // Add connection data to response
-    const memoryWithConnections = {
+    savedMemoryId = memory.id
+    savedMemory = {
       ...memory,
-      connectedMemories,
-      connectedThemes,
+      enriching: true, // Signal to frontend that AI enrichment is pending
     }
 
-    return NextResponse.json({ success: true, memory: memoryWithConnections })
+    // ── INSTANT RETURN — user sees memory immediately ────────────────
+    const response = NextResponse.json({ success: true, memory: savedMemory })
+
+    // ── BACKGROUND ENRICHMENT (fire and forget) ──────────────────────
+    backgroundEnrichMemory(
+      savedMemoryId,
+      rawContent,
+      memoryType,
+      hasImage ? imageFile : null,
+      hasAudio ? audioFile : null,
+      hasUrl,
+      url,
+      supabaseUserId
+    ).catch(err => {
+      console.error('[Background Enrichment] Unhandled error:', err instanceof Error ? err.message : 'Unknown')
+    })
+
+    return response
   } catch (error) {
     console.error('Capture route error:', error)
     const message = error instanceof Error ? error.message : 'Internal server error'

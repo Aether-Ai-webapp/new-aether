@@ -2,7 +2,7 @@
 
 import React, { useState, useRef, useEffect, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Brain, Send, Sparkles, MessageCircle } from 'lucide-react'
+import { Brain, Send, Sparkles, MessageCircle, Clock, X } from 'lucide-react'
 import { useAetherStore, type ChatMessage } from '@/lib/aether-store'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -215,6 +215,13 @@ export function AskAether() {
   const [input, setInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
 
+  // ── AI Daily Recap state ────────────────────────────────────────────
+  const [recap, setRecap] = useState<string | null>(null)
+  const [recapLoading, setRecapLoading] = useState(false)
+  const [recapCount, setRecapCount] = useState(0)
+  const [recapTopTags, setRecapTopTags] = useState<string[]>([])
+  const [showRecap, setShowRecap] = useState(true)
+
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const isDark = darkMode
@@ -228,6 +235,27 @@ export function AskAether() {
         viewport.scrollTop = viewport.scrollHeight
       }
     }
+  }, [])
+
+  // ── Fetch AI Daily Recap on mount ──────────────────────────────────
+  useEffect(() => {
+    const fetchRecap = async () => {
+      setRecapLoading(true)
+      try {
+        const res = await fetch('/api/recap?hours=24')
+        if (res.ok) {
+          const data = await res.json()
+          setRecap(data.recap)
+          setRecapCount(data.count || 0)
+          setRecapTopTags(data.topTags || [])
+        }
+      } catch {
+        setRecap(null)
+      } finally {
+        setRecapLoading(false)
+      }
+    }
+    fetchRecap()
   }, [])
 
   useEffect(() => {
@@ -355,6 +383,92 @@ export function AskAether() {
           )}
         </div>
       </div>
+
+      {/* ── AI Daily Recap Card ───────────────────────────────────── */}
+      {showRecap && (
+        <motion.div
+          initial={{ opacity: 0, y: -8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.3 }}
+          className="shrink-0 mb-3"
+        >
+          <div className={cn(
+            'rounded-2xl p-4 relative overflow-hidden',
+            isDark
+              ? 'bg-gradient-to-br from-purple-500/10 to-indigo-500/10 border border-purple-500/15'
+              : 'bg-gradient-to-br from-purple-50 via-violet-50 to-indigo-50 border border-purple-100/60'
+          )}>
+            {/* Shimmer effect while loading */}
+            {recapLoading && (
+              <motion.div
+                className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent"
+                animate={{ x: ['-100%', '200%'] }}
+                transition={{ duration: 1.5, repeat: Infinity, ease: 'easeInOut' }}
+              />
+            )}
+
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <div className={cn(
+                  'size-7 rounded-lg flex items-center justify-center',
+                  isDark ? 'bg-purple-500/20' : 'bg-purple-100'
+                )}>
+                  <Clock className={cn('size-3.5', isDark ? 'text-purple-400' : 'text-purple-600')} />
+                </div>
+                <div>
+                  <h3 className={cn('text-xs font-semibold', isDark ? 'text-purple-300' : 'text-purple-700')}>
+                    Daily Recap
+                  </h3>
+                  <p className={cn('text-[10px]', isDark ? 'text-white/20' : 'text-gray-400')}>
+                    Last 24h · {recapCount} memories
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowRecap(false)}
+                className={cn(
+                  'size-5 rounded-full flex items-center justify-center transition-colors',
+                  isDark ? 'hover:bg-white/10 text-white/30' : 'hover:bg-purple-100 text-gray-400'
+                )}
+              >
+                <X className="size-3" />
+              </button>
+            </div>
+
+            <div className={cn('mt-3 text-sm leading-relaxed', isDark ? 'text-white/60' : 'text-gray-700')}>
+              {recapLoading ? (
+                <div className="space-y-2">
+                  <div className="h-3 w-full rounded-full bg-purple-100/50 animate-pulse" />
+                  <div className="h-3 w-4/5 rounded-full bg-purple-100/40 animate-pulse" />
+                  <div className="h-3 w-3/5 rounded-full bg-purple-100/30 animate-pulse" />
+                </div>
+              ) : recap ? (
+                <p>{recap}</p>
+              ) : (
+                <p className={cn(isDark ? 'text-white/20' : 'text-gray-400')}>No recap available</p>
+              )}
+            </div>
+
+            {recapTopTags.length > 0 && !recapLoading && (
+              <div className="flex gap-1 mt-3">
+                {recapTopTags.slice(0, 4).map((tag) => (
+                  <span
+                    key={tag}
+                    className={cn(
+                      'text-[10px] px-2 py-0.5 rounded-full font-medium',
+                      isDark
+                        ? 'bg-purple-500/15 text-purple-300'
+                        : 'bg-purple-100/60 text-purple-600'
+                    )}
+                  >
+                    {tag}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        </motion.div>
+      )}
 
       {/* ── Chat Area ──────────────────────────────────────────────── */}
       <div className="flex-1 min-h-0">

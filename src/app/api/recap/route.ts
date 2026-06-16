@@ -1,50 +1,147 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { createServerClient } from '@supabase/ssr'
+import { cookies } from 'next/headers'
 import { db } from '@/lib/db'
+
+// ═══════════════════════════════════════════════════════════════════════
+// ─── AI DAILY RECAP GENERATOR ────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════
+//
+// GET /api/recap?hours=24
+//
+// Fetches all memories from the last N hours, synthesizes them into
+// an executive daily recap using AI, and returns:
+// - AI-generated recap text
+// - Top tags / themes
+// - Memory count + formatted list
+// - Period info
+
+function isSupabaseConfigured(): boolean {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL
+  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+  return !!(url && key && url !== 'your_supabase_url_here' && key !== 'your_supabase_anon_key_here')
+}
+
+async function getSupabaseRouteClient() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL!
+  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  const cookieStore = await cookies()
+
+  const supabase = createServerClient(url, key, {
+    cookies: {
+      getAll() { return cookieStore.getAll() },
+      setAll(cookiesToSet) {
+        try {
+          cookiesToSet.forEach(({ name, value, options }) =>
+            cookieStore.set(name, value, options)
+          )
+        } catch {
+          // Server Component context — ignore
+        }
+      },
+    },
+  })
+
+  return supabase
+}
 
 export async function GET(req: NextRequest) {
   try {
     const hoursParam = req.nextUrl.searchParams.get('hours')
     const hours = hoursParam ? parseInt(hoursParam, 10) : 24
 
-    // Fetch recent memories from the last N hours
     const cutoff = new Date(Date.now() - hours * 60 * 60 * 1000)
 
-    const memories = await db.memory.findMany({
-      where: {
-        createdAt: { gte: cutoff },
-      },
-      orderBy: { createdAt: 'desc' },
-      take: 50,
-    })
+    // ── Try Supabase first ────────────────────────────────────────────
+    let memories: Array<{
+      id: string
+      type: string
+      title: string
+      content: string
+      summary: string | null
+      tags: string[]
+      createdAt: string
+    }> = []
+
+    if (isSupabaseConfigured()) {
+      try {
+        const supabase = await getSupabaseRouteClient()
+        const { data: { user }, error: authError } = await supabase.auth.getUser()
+
+        if (!authError && user) {
+          const { data, error } = await supabase
+            .from('memories')
+            .select('id, type, title, content, summary, tags, created_at')
+            .eq('user_id', user.id)
+            .gte('created_at', cutoff.toISOString())
+            .order('created_at', { ascending: false })
+            .limit(50)
+
+          if (!error && data) {
+            memories = (data as Array<Record<string, unknown>>).map(row => ({
+              id: row.id as string,
+              type: (row.type as string) || 'text',
+              title: (row.title as string) || '',
+              content: ((row.content as string) || '').slice(0, 300),
+              summary: (row.summary as string) || null,
+              tags: row.tags ? (row.tags as string).split(',').filter(Boolean) : [],
+              createdAt: (row.created_at as string) || new Date().toISOString(),
+            }))
+          }
+        }
+      } catch (err) {
+        console.warn('Supabase recap fetch failed, falling back to Prisma:', err instanceof Error ? err.message : 'Unknown')
+      }
+    }
+
+    // ── Prisma fallback ────────────────────────────────────────────────
+    if (memories.length === 0) {
+      const prismaMemories = await db.memory.findMany({
+        where: {
+          createdAt: { gte: cutoff },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 50,
+      })
+
+      memories = prismaMemories.map(m => ({
+        id: m.id,
+        type: m.type,
+        title: m.title,
+        content: m.content.slice(0, 300),
+        summary: m.summary,
+        tags: m.tags ? m.tags.split(',').filter(Boolean) : [],
+        createdAt: m.createdAt.toISOString(),
+      }))
+    }
 
     if (memories.length === 0) {
       return NextResponse.json({
-        recap: 'No memories captured in this period. Start capturing thoughts, links, and ideas to see your AI-generated executive recap here.',
+        recap: 'A quiet period — no memories captured yet. Start saving thoughts, links, and ideas to see your AI-generated executive recap here.',
         count: 0,
         topTags: [],
         memories: [],
+        period: hours,
       })
     }
 
-    // Build context for the AI
+    // ── Build context for AI ───────────────────────────────────────────
     const memorySummaries = memories.map(m => {
       const parts = [`[${m.type}] "${m.title || 'Untitled'}"`]
       if (m.summary) parts.push(`Summary: ${m.summary}`)
-      if (m.content) parts.push(`Content: ${m.content.slice(0, 300)}`)
-      if (m.tags) parts.push(`Tags: ${m.tags}`)
+      if (m.content) parts.push(`Content: ${m.content}`)
+      if (m.tags.length > 0) parts.push(`Tags: ${m.tags.join(', ')}`)
       return parts.join(' | ')
     })
 
     const contextText = memorySummaries.join('\n\n')
 
-    // Count tags
+    // ── Count tags ─────────────────────────────────────────────────────
     const tagCounts: Record<string, number> = {}
     memories.forEach(m => {
-      if (m.tags) {
-        m.tags.split(',').filter(Boolean).forEach(t => {
-          tagCounts[t.trim()] = (tagCounts[t.trim()] || 0) + 1
-        })
-      }
+      m.tags.forEach(t => {
+        tagCounts[t.trim()] = (tagCounts[t.trim()] || 0) + 1
+      })
     })
 
     const topTags = Object.entries(tagCounts)
@@ -52,9 +149,10 @@ export async function GET(req: NextRequest) {
       .slice(0, 5)
       .map(([tag]) => tag)
 
-    // Generate AI recap using z-ai-web-dev-sdk
+    // ── Generate AI recap ──────────────────────────────────────────────
     let aiRecap = ''
 
+    // PRIMARY: z-ai-web-dev-sdk LLM (always available)
     try {
       const ZAI = (await import('z-ai-web-dev-sdk')).default
       const zai = await ZAI.create()
@@ -63,7 +161,7 @@ export async function GET(req: NextRequest) {
         messages: [
           {
             role: 'assistant',
-            content: `You are Aether, an intelligent personal knowledge assistant. You generate concise, insightful executive recaps of a person's captured thoughts and ideas. Write in a warm, reflective, and slightly poetic tone. Focus on themes, patterns, and actionable insights. Keep the recap to 3-5 sentences. Use second person ("you").`,
+            content: `You are an executive chief of staff. Synthesize the following raw stream of daily thoughts, bookmarks, and captures into a highly coherent, actionable 3-sentence daily retrospective analysis emphasizing primary themes, achievements, and structural focuses. Write in a warm, reflective, and slightly poetic tone. Use second person ("you"). Be specific about what was captured, not generic.`,
           },
           {
             role: 'user',
@@ -75,27 +173,53 @@ export async function GET(req: NextRequest) {
 
       aiRecap = completion.choices[0]?.message?.content || ''
     } catch (aiErr) {
-      console.error('AI recap generation failed:', aiErr)
-      // Fallback: simple recap
-      const typeBreakdown = memories.reduce((acc, m) => {
-        acc[m.type] = (acc[m.type] || 0) + 1
-        return acc
-      }, {} as Record<string, number>)
+      console.warn('z-ai-web-dev-sdk recap generation failed:', aiErr instanceof Error ? aiErr.message : 'Unknown')
 
-      const typeSummary = Object.entries(typeBreakdown)
-        .map(([type, count]) => `${count} ${type}${count > 1 ? 's' : ''}`)
-        .join(', ')
+      // FALLBACK: Gemini
+      const geminiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY
+      if (geminiKey) {
+        try {
+          const { GoogleGenerativeAI } = await import('@google/generative-ai')
+          const genAI = new GoogleGenerativeAI(geminiKey)
+          const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' })
 
-      aiRecap = `You captured ${memories.length} memories in the last ${hours} hours (${typeSummary}). ${topTags.length > 0 ? `Your primary focus areas included: ${topTags.join(', ')}.` : ''} Keep capturing to unlock deeper AI-powered insights and thematic connections.`
+          const result = await model.generateContent({
+            contents: [
+              { role: 'user', parts: [{ text: 'You are an executive chief of staff. Synthesize the following daily captures into a 3-sentence retrospective emphasizing themes, achievements, and focus areas. Use second person ("you").' }] },
+              { role: 'model', parts: [{ text: 'Understood. I will generate a concise 3-sentence executive recap.' }] },
+              { role: 'user', parts: [{ text: `Memories from the last ${hours} hours:\n\n${contextText}` }] },
+            ],
+            generationConfig: { temperature: 0.5, maxOutputTokens: 300 },
+          })
+
+          aiRecap = result.response.text().trim()
+        } catch (geminiErr) {
+          console.warn('Gemini recap generation failed:', geminiErr instanceof Error ? geminiErr.message : 'Unknown')
+        }
+      }
+
+      // ULTIMATE FALLBACK: Simple stats-based recap
+      if (!aiRecap) {
+        const typeBreakdown = memories.reduce((acc, m) => {
+          acc[m.type] = (acc[m.type] || 0) + 1
+          return acc
+        }, {} as Record<string, number>)
+
+        const typeSummary = Object.entries(typeBreakdown)
+          .map(([type, count]) => `${count} ${type}${count > 1 ? 's' : ''}`)
+          .join(', ')
+
+        aiRecap = `You captured ${memories.length} memories in the last ${hours} hours (${typeSummary}). ${topTags.length > 0 ? `Your primary focus areas included: ${topTags.join(', ')}.` : ''} Keep capturing to unlock deeper AI-powered insights and thematic connections.`
+      }
     }
 
-    // Format memories for response
+    // ── Format memories for response ───────────────────────────────────
     const formattedMemories = memories.map(m => ({
       id: m.id,
       type: m.type,
       title: m.title,
       summary: m.summary,
-      tags: m.tags ? m.tags.split(',').filter(Boolean) : [],
+      tags: m.tags,
       createdAt: m.createdAt,
     }))
 

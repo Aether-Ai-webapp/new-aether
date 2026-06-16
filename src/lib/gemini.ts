@@ -65,3 +65,27 @@ export async function generateSummary(content: string): Promise<string> {
     return ''
   }
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// ─── EMBEDDING GENERATION (text-embedding-004, 768-dim vectors) ──────
+// ═══════════════════════════════════════════════════════════════════════
+
+export async function generateEmbedding(text: string): Promise<number[] | null> {
+  const ai = getGenAI()
+  if (!ai) return null
+
+  try {
+    const embeddingModel = ai.getGenerativeModel('text-embedding-004')
+    const result = await embeddingModel.embedContent(text.slice(0, 2000))
+    const values = result.embedding.values
+
+    if (!values || values.length === 0) {
+      throw new Error('Empty embedding returned')
+    }
+
+    return values
+  } catch (err) {
+    console.warn('Embedding generation failed:', err instanceof Error ? err.message : 'Unknown')
+    return null
+  }
+}

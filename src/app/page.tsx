@@ -281,6 +281,12 @@ export default function AetherApp() {
   const [recapData, setRecapData] = useState<{ recap: string; count: number; topTags: string[]; period: number } | null>(null)
   const [recapLoading, setRecapLoading] = useState(false)
 
+  // ── Semantic Search State ──────────────────────────────────────────
+  const [semanticResults, setSemanticResults] = useState<Memory[] | null>(null)
+  const [isSearching, setIsSearching] = useState(false)
+  const [searchMethod, setSearchMethod] = useState<string>('keyword')
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
   // ── Drawer State ─────────────────────────────────────────────────
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [drawerMemory, setDrawerMemory] = useState<Memory | null>(null)
@@ -332,6 +338,49 @@ export default function AetherApp() {
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [])
+
+  // ── Semantic Search: debounced API call ──────────────────────────────
+  useEffect(() => {
+    if (!store.searchQuery.trim() || store.searchQuery.trim().length < 3) {
+      setSemanticResults(null)
+      setIsSearching(false)
+      setSearchMethod('keyword')
+      return
+    }
+
+    setIsSearching(true)
+
+    if (searchDebounceRef.current) {
+      clearTimeout(searchDebounceRef.current)
+    }
+
+    searchDebounceRef.current = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/search?q=${encodeURIComponent(store.searchQuery.trim())}&limit=20`)
+        if (res.ok) {
+          const data = await res.json()
+          if (data.results && data.results.length > 0) {
+            setSemanticResults(data.results as Memory[])
+            setSearchMethod(data.method || 'keyword')
+          } else {
+            setSemanticResults([])
+            setSearchMethod(data.method || 'keyword')
+          }
+        }
+      } catch {
+        setSemanticResults(null)
+        setSearchMethod('keyword')
+      } finally {
+        setIsSearching(false)
+      }
+    }, 400)
+
+    return () => {
+      if (searchDebounceRef.current) {
+        clearTimeout(searchDebounceRef.current)
+      }
+    }
+  }, [store.searchQuery])
 
   // Clear just-captured animation after a few seconds
   useEffect(() => {
@@ -614,6 +663,15 @@ export default function AetherApp() {
   const showLanding = !isMobile && !store.isAuthenticated
 
   const filteredMemories = useMemo(() => {
+    // If semantic search returned results, use those
+    if (semanticResults !== null && store.searchQuery.trim().length >= 3) {
+      return semanticResults.filter(m => {
+        if (store.filterType !== 'all' && m.type !== store.filterType) return false
+        return true
+      })
+    }
+
+    // Fallback: client-side filtering
     return store.memories.filter(m => {
       if (store.filterType !== 'all' && m.type !== store.filterType) return false
       if (store.searchQuery) {
@@ -626,7 +684,7 @@ export default function AetherApp() {
       }
       return true
     })
-  }, [store.memories, store.filterType, store.searchQuery])
+  }, [store.memories, store.filterType, store.searchQuery, semanticResults])
 
   const weeklyRecap = useMemo(() => getWeeklyRecap(store.memories), [store.memories])
 
@@ -1648,9 +1706,24 @@ export default function AetherApp() {
                     type="text"
                     value={store.searchQuery}
                     onChange={e => store.setSearchQuery(e.target.value)}
-                    placeholder="Filter..."
-                    className="pl-8 pr-3 py-1.5 text-xs bg-white/60 border border-black/[0.04] rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-300 placeholder:text-zinc-300 w-32 sm:w-40 transition-all"
+                    placeholder="Semantic search..."
+                    className="pl-8 pr-16 py-1.5 text-xs bg-white/60 border border-black/[0.04] rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-300 placeholder:text-zinc-300 w-40 sm:w-52 transition-all"
                   />
+                  <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
+                    {isSearching && (
+                      <Loader2 className="w-3 h-3 animate-spin text-zinc-300" />
+                    )}
+                    {store.searchQuery.trim().length >= 3 && !isSearching && semanticResults !== null && (
+                      <span className={cn(
+                        "text-[9px] px-1.5 py-0.5 rounded-full font-medium",
+                        searchMethod === 'semantic'
+                          ? "bg-purple-100 text-purple-600"
+                          : "bg-gray-100 text-gray-500"
+                      )}>
+                        {searchMethod === 'semantic' ? 'AI' : 'kw'}
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
 
@@ -1698,6 +1771,7 @@ export default function AetherApp() {
                 <div className="columns-1 md:columns-2 lg:columns-3 gap-3 [column-fill:_balance]">
                   {filteredMemories.map(memory => {
                     const isJustCaptured = justCapturedId === memory.id
+                    const isEnriching = (memory as Memory & { enriching?: boolean }).enriching || memory.id.startsWith('temp_')
                     return (
                       <motion.div
                         key={memory.id}
@@ -1711,7 +1785,8 @@ export default function AetherApp() {
                           onClick={() => openDrawer(memory)}
                           className={cn(
                             "group cursor-pointer rounded-xl bg-white/80 backdrop-blur-xl border border-black/[0.04] shadow-[0_20px_50px_rgba(109,89,122,0.05)] overflow-hidden transition-all duration-500 ease-out hover:shadow-[0_8px_30px_rgba(109,89,122,0.08)] hover:-translate-y-0.5",
-                            isJustCaptured && "ring-2 ring-emerald-400/40 shadow-[0_0_20px_rgba(52,211,153,0.15)]"
+                            isJustCaptured && "ring-2 ring-emerald-400/40 shadow-[0_0_20px_rgba(52,211,153,0.15)]",
+                            isEnriching && "ring-2 ring-purple-300/30 shadow-[0_0_20px_rgba(168,85,247,0.08)]"
                           )}
                         >
                           {/* Image at top */}
@@ -1753,11 +1828,20 @@ export default function AetherApp() {
                               )}
                             </div>
                             {/* Content preview */}
-                            {(memory.summary || memory.content) && (
+                            {isEnriching ? (
+                              <div className="flex items-center gap-2 mb-3">
+                                <motion.div
+                                  className="h-2 w-16 rounded-full bg-purple-100"
+                                  animate={{ opacity: [0.5, 1, 0.5] }}
+                                  transition={{ duration: 1.5, repeat: Infinity, ease: 'easeInOut' }}
+                                />
+                                <span className="text-[10px] text-purple-400 font-medium">AI enriching...</span>
+                              </div>
+                            ) : (memory.summary || memory.content) ? (
                               <p className="text-xs text-zinc-500 leading-relaxed line-clamp-3 mb-3">
                                 {memory.summary || memory.content}
                               </p>
-                            )}
+                            ) : null}
                             {/* Tags and time */}
                             <div className="flex items-center gap-1.5 flex-wrap">
                               {memory.tags.slice(0, 3).map(tag => (
