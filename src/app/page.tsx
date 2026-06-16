@@ -1118,7 +1118,7 @@ export default function AetherApp() {
                       </div>
                       <div>
                         <p className="font-semibold text-zinc-800 text-sm">Intelligence Engine Status</p>
-                        <p className="text-xs text-zinc-400">z-ai-web-dev-sdk LLM Core (Online)</p>
+                        <p className="text-xs text-zinc-400">Gemini 2.0 Flash Intelligence Core</p>
                       </div>
                     </div>
                     <span className="bg-emerald-100 text-emerald-700 text-[10px] font-bold px-2.5 py-1 rounded-full flex items-center gap-1">
@@ -1135,7 +1135,7 @@ export default function AetherApp() {
                       </div>
                       <div>
                         <p className="font-semibold text-zinc-800 text-sm">Dynamic Voice Pipeline</p>
-                        <p className="text-xs text-zinc-400">z-ai-web-dev-sdk ASR Dictation Engine</p>
+                        <p className="text-xs text-zinc-400">Groq Whisper Dictation Engine</p>
                       </div>
                     </div>
                     <span className="bg-emerald-100 text-emerald-700 text-[10px] font-bold px-2.5 py-1 rounded-full flex items-center gap-1">
@@ -1152,7 +1152,7 @@ export default function AetherApp() {
                       </div>
                       <div>
                         <p className="font-semibold text-zinc-800 text-sm">Vision Understanding Engine</p>
-                        <p className="text-xs text-zinc-400">z-ai-web-dev-sdk VLM Image Analysis</p>
+                        <p className="text-xs text-zinc-400">Gemini Vision Image Analysis</p>
                       </div>
                     </div>
                     <span className="bg-emerald-100 text-emerald-700 text-[10px] font-bold px-2.5 py-1 rounded-full flex items-center gap-1">

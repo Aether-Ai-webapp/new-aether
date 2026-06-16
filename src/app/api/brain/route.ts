@@ -107,12 +107,16 @@ function detectClusters(memories: MemoryNode[]): BrainCluster[] {
   return clusters.sort((a, b) => b.memoryIds.length - a.memoryIds.length).slice(0, 10)
 }
 
-// ── LLM-powered Deep Connection Analysis ─────────────────────────────
+// ── LLM-powered Deep Connection Analysis (Gemini Flash) ─────────────
 
 async function deepAnalysisWithLLM(memories: MemoryNode[]): Promise<BrainCluster[] | null> {
+  const geminiKey = process.env.GEMINI_API_KEY
+  if (!geminiKey) return null
+
   try {
-    const ZAI = (await import('z-ai-web-dev-sdk')).default
-    const sdk = await ZAI.create()
+    const { GoogleGenerativeAI } = await import('@google/generative-ai')
+    const genAI = new GoogleGenerativeAI(geminiKey)
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' })
 
     // Build a condensed memory summary for the LLM
     const memorySummaries = memories.slice(0, 20).map(m =>
@@ -134,15 +138,16 @@ Only include clusters where memories genuinely relate. Use the short IDs (first 
 Memories:
 ${memorySummaries}`
 
-    const completion = await sdk.chat.completions.create({
-      messages: [
-        { role: 'assistant', content: 'You are an AI brain that finds deep, non-obvious thematic connections between ideas. Return only valid JSON arrays.' },
-        { role: 'user', content: prompt },
+    const result = await model.generateContent({
+      contents: [
+        { role: 'user', parts: [{ text: 'You are an AI brain that finds deep, non-obvious thematic connections between ideas. Return only valid JSON arrays.' }] },
+        { role: 'model', parts: [{ text: 'Understood. I will analyze the memories and return a JSON array of thematic clusters.' }] },
+        { role: 'user', parts: [{ text: prompt }] },
       ],
-      thinking: { type: 'disabled' },
+      generationConfig: { temperature: 0.5, maxOutputTokens: 800 },
     })
 
-    const responseText = completion.choices[0]?.message?.content
+    const responseText = result.response.text()
     if (!responseText) return null
 
     let jsonStr = responseText.trim()
@@ -170,7 +175,7 @@ ${memorySummaries}`
 
     return null
   } catch (err) {
-    console.warn('LLM deep cluster analysis failed:', err instanceof Error ? err.message : 'Unknown')
+    console.warn('Gemini deep cluster analysis failed:', err instanceof Error ? err.message : 'Unknown')
     return null
   }
 }

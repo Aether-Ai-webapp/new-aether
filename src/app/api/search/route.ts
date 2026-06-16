@@ -22,7 +22,7 @@ function isSupabaseConfigured(): boolean {
 
 async function generateEmbedding(text: string): Promise<number[] | null> {
   // Try Gemini text-embedding-004
-  const geminiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY
+  const geminiKey = process.env.GEMINI_API_KEY
   if (!geminiKey) return null
 
   try {

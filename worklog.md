@@ -97,3 +97,31 @@ Stage Summary:
 - Shimmer skeleton loading state while generating
 - Top tags displayed below recap text
 - Memory count and period shown
+
+---
+Task ID: 6
+Agent: Main Agent
+Task: Replace z-ai-web-dev-sdk with production-ready AI (Gemini + Groq) and fix env vars
+
+Work Log:
+- Fixed env var name: NEXT_PUBLIC_GEMINI_API_KEY → GEMINI_API_KEY across 9 files (gemini.ts, capture/route.ts, recap/route.ts, chat/route.ts, search/route.ts, generate-embedding/route.ts, auto-tag/route.ts, memories/related/[id]/route.ts)
+- Fixed env var name: NEXT_PUBLIC_GROQ_API_KEY → GROQ_API_KEY across 3 files (capture/route.ts, chat/route.ts, auto-tag/route.ts)
+- capture/route.ts: Replaced analyzeImageWithVLM from z-ai-web-dev-sdk VLM to Gemini Vision (gemini-2.0-flash with inlineData)
+- capture/route.ts: Replaced synthesizeWithLLM from z-ai-web-dev-sdk LLM primary to Gemini primary + Groq fallback
+- capture/route.ts: Replaced transcribeAudio from z-ai-web-dev-sdk ASR primary + Groq fallback to Groq Whisper primary only
+- brain/route.ts: Replaced deepAnalysisWithLLM from z-ai-web-dev-sdk to Gemini Flash
+- recap/route.ts: Replaced z-ai-web-dev-sdk primary with Gemini primary + Groq fallback + stats fallback
+- ai/chat/route.ts: Removed entire z-ai-web-dev-sdk streaming block, made Gemini streaming the primary, kept Groq streaming as fallback
+- ai/read-link/route.ts: Removed z-ai-web-dev-sdk web reader, using plain fetch only with improved HTML extraction (og:title, og:description, better tag stripping)
+- aether-asr.ts: Rewrote from z-ai-web-dev-sdk to Groq Whisper API
+- page.tsx: Updated Settings labels from "z-ai-web-dev-sdk" to "Gemini 2.0 Flash Intelligence Core", "Groq Whisper Dictation Engine", "Gemini Vision Image Analysis"
+- Verified zero remaining references to z-ai-web-dev-sdk in codebase
+- Verified zero remaining references to NEXT_PUBLIC_GEMINI_API_KEY or NEXT_PUBLIC_GROQ_API_KEY
+- Lint passes clean
+- Browser verification: app renders correctly, capture flow works end-to-end
+
+Stage Summary:
+- All z-ai-web-dev-sdk dependencies removed from all API routes
+- Production-ready AI stack: Gemini 2.0 Flash (primary for LLM/Vision/Embeddings) + Groq (primary for ASR, fallback for LLM)
+- Env vars fixed: GEMINI_API_KEY and GROQ_API_KEY (server-side only, no NEXT_PUBLIC_ prefix)
+- App fully functional with Prisma/SQLite fallback when no cloud keys are set

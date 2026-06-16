@@ -75,7 +75,7 @@ function autoGenerateTags(content: string, title: string): string[] {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// ─── AI COGNITIVE SYNTHESIS (z-ai-web-dev-sdk LLM — ALWAYS AVAILABLE) ─
+// ─── AI COGNITIVE SYNTHESIS (Gemini Flash — production-ready) ──────────
 // ═══════════════════════════════════════════════════════════════════════
 
 interface AISynthesis {
@@ -87,12 +87,7 @@ interface AISynthesis {
 }
 
 async function synthesizeWithLLM(rawContent: string): Promise<AISynthesis | null> {
-  // ── PRIMARY: z-ai-web-dev-sdk LLM (always available) ──────────────
-  try {
-    const ZAI = (await import('z-ai-web-dev-sdk')).default
-    const sdk = await ZAI.create()
-
-    const systemPrompt = `You are the sovereign intelligence core of Aether — a personal second-brain system. Analyze this memory capture. Generate:
+  const systemPrompt = `You are the sovereign intelligence core of Aether — a personal second-brain system. Analyze this memory capture. Generate:
 1. A clean, concise suggested title (max 60 chars)
 2. A natural 2-sentence summary
 3. A deep professional insight connecting this to broader patterns
@@ -108,62 +103,13 @@ Return STRICTLY a valid JSON object. No markdown, no extra text:
   "connected_themes": ["theme1", "theme2"]
 }`
 
-    const completion = await sdk.chat.completions.create({
-      messages: [
-        { role: 'assistant', content: systemPrompt },
-        { role: 'user', content: rawContent.slice(0, 4000) },
-      ],
-      thinking: { type: 'disabled' },
-    })
-
-    const responseText = completion.choices[0]?.message?.content
-    if (!responseText) throw new Error('Empty LLM response')
-
-    // Extract JSON from response
-    let jsonStr = responseText.trim()
-    const jsonMatch = jsonStr.match(/\{[\s\S]*\}/)
-    if (jsonMatch) jsonStr = jsonMatch[0]
-
-    const parsed = JSON.parse(jsonStr)
-
-    if (
-      typeof parsed.suggested_title === 'string' &&
-      typeof parsed.summary === 'string' &&
-      typeof parsed.deep_insight === 'string' &&
-      Array.isArray(parsed.tags)
-    ) {
-      return {
-        suggested_title: parsed.suggested_title,
-        summary: parsed.summary,
-        deep_insight: parsed.deep_insight,
-        tags: parsed.tags.filter((t: unknown) => typeof t === 'string').slice(0, 5),
-        connected_themes: Array.isArray(parsed.connected_themes)
-          ? parsed.connected_themes.filter((t: unknown) => typeof t === 'string').slice(0, 3)
-          : [],
-      }
-    }
-
-    return null
-  } catch (err) {
-    console.warn('z-ai-web-dev-sdk LLM synthesis failed:', err instanceof Error ? err.message : 'Unknown')
-  }
-
-  // ── FALLBACK: Gemini Flash (when API key is set) ──────────────────
-  const geminiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY
+  // ── PRIMARY: Gemini Flash ────────────────────────────────────────
+  const geminiKey = process.env.GEMINI_API_KEY
   if (geminiKey) {
     try {
       const { GoogleGenerativeAI } = await import('@google/generative-ai')
       const genAI = new GoogleGenerativeAI(geminiKey)
       const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' })
-
-      const systemPrompt = `You are the sovereign intelligence core of Aether. Analyze this data input. Synthesize an exquisite, natural, human-like 2-sentence summary, a clean suggested title, a deep professional insight, and an array of 3 specific tags. Return strictly a single, valid JSON object formatted exactly like this:
-{
-  "suggested_title": "The optimized title string.",
-  "summary": "The 2-sentence summary string.",
-  "deep_insight": "The deep professional analysis string.",
-  "tags": ["keyword1", "keyword2", "keyword3"],
-  "connected_themes": ["theme1", "theme2"]
-}`
 
       const result = await model.generateContent({
         contents: [
@@ -204,11 +150,65 @@ Return STRICTLY a valid JSON object. No markdown, no extra text:
     }
   }
 
+  // ── FALLBACK: Groq (fast & cheap) ──────────────────────────────
+  const groqKey = process.env.GROQ_API_KEY
+  if (groqKey && groqKey !== 'placeholder_groq_key') {
+    try {
+      const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${groqKey}`,
+        },
+        body: JSON.stringify({
+          model: 'llama-3.1-8b-instant',
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: rawContent.slice(0, 4000) },
+          ],
+          temperature: 0.4,
+          max_tokens: 800,
+        }),
+      })
+
+      if (response.ok) {
+        const data = await response.json()
+        const responseText = data.choices?.[0]?.message?.content
+        if (responseText) {
+          let jsonStr = responseText.trim()
+          const jsonMatch = jsonStr.match(/\{[\s\S]*\}/)
+          if (jsonMatch) jsonStr = jsonMatch[0]
+
+          const parsed = JSON.parse(jsonStr)
+
+          if (
+            typeof parsed.suggested_title === 'string' &&
+            typeof parsed.summary === 'string' &&
+            typeof parsed.deep_insight === 'string' &&
+            Array.isArray(parsed.tags)
+          ) {
+            return {
+              suggested_title: parsed.suggested_title,
+              summary: parsed.summary,
+              deep_insight: parsed.deep_insight,
+              tags: parsed.tags.filter((t: unknown) => typeof t === 'string').slice(0, 5),
+              connected_themes: Array.isArray(parsed.connected_themes)
+                ? parsed.connected_themes.filter((t: unknown) => typeof t === 'string').slice(0, 3)
+                : [],
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('Groq synthesis failed:', err instanceof Error ? err.message : 'Unknown')
+    }
+  }
+
   return null
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// ─── IMAGE VISION ANALYSIS (z-ai-web-dev-sdk VLM — ALWAYS AVAILABLE) ─
+// ─── IMAGE VISION ANALYSIS (Gemini Vision — production-ready) ──────────
 // ═══════════════════════════════════════════════════════════════════════
 
 interface ImageAnalysis {
@@ -219,9 +219,16 @@ interface ImageAnalysis {
 }
 
 async function analyzeImageWithVLM(imageFile: File): Promise<ImageAnalysis | null> {
+  const geminiKey = process.env.GEMINI_API_KEY
+  if (!geminiKey) {
+    console.warn('No GEMINI_API_KEY set — image analysis unavailable')
+    return null
+  }
+
   try {
-    const ZAI = (await import('z-ai-web-dev-sdk')).default
-    const sdk = await ZAI.create()
+    const { GoogleGenerativeAI } = await import('@google/generative-ai')
+    const genAI = new GoogleGenerativeAI(geminiKey)
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' })
 
     // Convert image to base64
     const arrayBuffer = await imageFile.arrayBuffer()
@@ -236,25 +243,17 @@ async function analyzeImageWithVLM(imageFile: File): Promise<ImageAnalysis | nul
 
 Return STRICTLY valid JSON only, no markdown or extra text.`
 
-    const response = await sdk.chat.completions.createVision({
-      messages: [
-        {
-          role: 'user',
-          content: [
-            { type: 'text', text: prompt },
-            {
-              type: 'image_url',
-              image_url: {
-                url: `data:${mimeType};base64,${base64Image}`,
-              },
-            },
-          ],
+    const result = await model.generateContent([
+      {
+        inlineData: {
+          mimeType,
+          data: base64Image,
         },
-      ],
-      thinking: { type: 'disabled' },
-    })
+      },
+      { text: prompt },
+    ])
 
-    const responseText = response.choices[0]?.message?.content
+    const responseText = result.response.text()
     if (!responseText) return null
 
     let jsonStr = responseText.trim()
@@ -274,36 +273,18 @@ Return STRICTLY valid JSON only, no markdown or extra text.`
 
     return null
   } catch (err) {
-    console.warn('VLM image analysis failed:', err instanceof Error ? err.message : 'Unknown')
+    console.warn('Gemini Vision image analysis failed:', err instanceof Error ? err.message : 'Unknown')
     return null
   }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// ─── AUDIO TRANSCRIPTION (z-ai-web-dev-sdk ASR) ──────────────────────
+// ─── AUDIO TRANSCRIPTION (Groq Whisper — production-ready) ────────────
 // ═══════════════════════════════════════════════════════════════════════
 
 async function transcribeAudio(audioFile: File): Promise<string> {
-  // Try z-ai-web-dev-sdk ASR first (always available in this environment)
-  try {
-    const ZAI = (await import('z-ai-web-dev-sdk')).default
-    const sdk = await ZAI.create()
-    const arrayBuffer = await audioFile.arrayBuffer()
-    const base64Audio = Buffer.from(arrayBuffer).toString('base64')
-    const result = await sdk.audio.asr.create({
-      file_base64: base64Audio,
-    })
-    if (result && typeof result === 'object' && 'text' in result) {
-      const text = (result as { text: string }).text
-      if (text?.trim()) return text
-    }
-    if (typeof result === 'string' && result.trim()) return result
-  } catch (err) {
-    console.warn('z-ai-web-dev-sdk ASR failed:', err instanceof Error ? err.message : 'Unknown')
-  }
-
-  // Try Groq Whisper as fallback
-  const groqKey = process.env.NEXT_PUBLIC_GROQ_API_KEY
+  // Try Groq Whisper (fast & accurate)
+  const groqKey = process.env.GROQ_API_KEY
   if (groqKey && groqKey !== 'placeholder_groq_key') {
     try {
       const formData = new FormData()

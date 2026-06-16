@@ -18,7 +18,7 @@ export async function POST(req: NextRequest) {
 
     // ── ATTEMPT 1: Semantic Search with pgvector (RAG) ──────────────────
     try {
-      const geminiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY
+      const geminiKey = process.env.GEMINI_API_KEY
       if (geminiKey) {
         // Step A: Convert the user's question into an embedding
         const { GoogleGenerativeAI } = await import('@google/generative-ai')
@@ -193,88 +193,8 @@ Memory Handling:
       })
     }
 
-    // ── Try z-ai-web-dev-sdk with streaming ──────────────────────────────
-    try {
-      const ZAI = (await import('z-ai-web-dev-sdk')).default
-      const zai = await ZAI.create()
-
-      // Check if streaming is supported by trying stream: true
-      async function* zaiStreamGenerator() {
-        // Try streaming mode first
-        try {
-          const response = await zai.chat.completions.create({
-            messages: [
-              { role: 'assistant', content: systemPrompt },
-              { role: 'user', content: message },
-            ],
-            stream: true,
-            thinking: { type: 'disabled' },
-          })
-
-          // If the response is a stream (has getReader), read it
-          if (response && typeof response === 'object' && response.body && typeof response.body.getReader === 'function') {
-            const reader = response.body.getReader()
-            const decoder = new TextDecoder()
-            while (true) {
-              const { done, value } = await reader.read()
-              if (done) break
-              const chunk = decoder.decode(value, { stream: true })
-              // Parse SSE data lines
-              const lines = chunk.split('\n')
-              for (const line of lines) {
-                if (line.startsWith('data: ')) {
-                  const data = line.slice(6).trim()
-                  if (data === '[DONE]') return
-                  try {
-                    const parsed = JSON.parse(data)
-                    const content = parsed.choices?.[0]?.delta?.content
-                    if (content) yield content
-                  } catch {
-                    // Not JSON, yield raw
-                    if (data) yield data
-                  }
-                }
-              }
-            }
-            return
-          }
-        } catch {
-          // Streaming mode failed, fall through to non-streaming
-        }
-
-        // Non-streaming fallback — simulate streaming word-by-word
-        const completion = await zai.chat.completions.create({
-          messages: [
-            { role: 'assistant', content: systemPrompt },
-            { role: 'user', content: message },
-          ],
-          thinking: { type: 'disabled' },
-        })
-
-        const response = completion.choices?.[0]?.message?.content || 'I couldn\'t generate a response. Please try again.'
-
-        // Stream word-by-word for a typing effect
-        const words = response.split(/(\s+)/)
-        for (const word of words) {
-          yield word
-          // Small delay for natural typing feel
-          await new Promise((r) => setTimeout(r, 15))
-        }
-      }
-
-      const stream = createStreamFromGenerator(zaiStreamGenerator())
-      return new Response(stream, {
-        headers: {
-          'Content-Type': 'text/plain; charset=utf-8',
-          'Transfer-Encoding': 'chunked',
-        },
-      })
-    } catch (zaiError) {
-      console.error('z-ai failed:', zaiError instanceof Error ? zaiError.message : 'Unknown')
-    }
-
-    // ── Try Gemini with streaming ────────────────────────────────────────
-    const geminiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY
+    // ── Try Gemini with streaming (PRIMARY) ────────────────────────────────
+    const geminiKey = process.env.GEMINI_API_KEY
     if (geminiKey) {
       try {
         const { GoogleGenerativeAI } = await import('@google/generative-ai')
@@ -310,7 +230,7 @@ Memory Handling:
     }
 
     // ── Try Groq with streaming ──────────────────────────────────────────
-    const groqKey = process.env.NEXT_PUBLIC_GROQ_API_KEY
+    const groqKey = process.env.GROQ_API_KEY
     if (groqKey && groqKey !== 'placeholder_groq_key') {
       try {
         async function* groqStreamGenerator() {

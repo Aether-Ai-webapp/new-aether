@@ -45,7 +45,7 @@ function parseTagsFromResponse(rawText: string): string[] {
 
 // ─── Attempt 1: Groq (fast & cheap) via REST API ─────────────────────
 async function tryGroq(content: string): Promise<string | null> {
-  const groqKey = process.env.NEXT_PUBLIC_GROQ_API_KEY
+  const groqKey = process.env.GROQ_API_KEY
   if (!groqKey || groqKey === 'placeholder_groq_key') return null
 
   const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
@@ -78,7 +78,7 @@ async function tryGroq(content: string): Promise<string | null> {
 
 // ─── Attempt 2: Gemini (failover) ────────────────────────────────────
 async function tryGemini(content: string): Promise<string | null> {
-  const geminiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY
+  const geminiKey = process.env.GEMINI_API_KEY
   if (!geminiKey) return null
 
   const genAI = new GoogleGenerativeAI(geminiKey)

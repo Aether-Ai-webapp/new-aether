@@ -1,26 +1,32 @@
 /**
- * ASR (Automatic Speech Recognition) helper using z-ai-web-dev-sdk
+ * ASR (Automatic Speech Recognition) helper using Groq Whisper API
  * This module is server-only.
  */
-import ZAI from 'z-ai-web-dev-sdk'
 
 export async function createTranscription(audioFile: File): Promise<string> {
-  try {
-    const arrayBuffer = await audioFile.arrayBuffer()
-    const base64Audio = Buffer.from(arrayBuffer).toString('base64')
+  const groqKey = process.env.GROQ_API_KEY
+  if (!groqKey || groqKey === 'placeholder_groq_key') {
+    console.warn('No GROQ_API_KEY set — voice transcription unavailable')
+    return ''
+  }
 
-    const sdk = await ZAI.create()
-    const result = await sdk.audio.asr.create({
-      file_base64: base64Audio,
+  try {
+    const formData = new FormData()
+    formData.append('file', audioFile)
+    formData.append('model', 'whisper-large-v3-turbo')
+    formData.append('response_format', 'json')
+
+    const response = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${groqKey}`,
+      },
+      body: formData,
     })
 
-    if (result && typeof result === 'object' && 'text' in result) {
-      return (result as { text: string }).text || ''
-    }
-
-    // If the result is a string, return it directly
-    if (typeof result === 'string') {
-      return result
+    if (response.ok) {
+      const data = await response.json()
+      if (data.text?.trim()) return data.text.trim()
     }
 
     return ''

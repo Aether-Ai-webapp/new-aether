@@ -152,65 +152,79 @@ export async function GET(req: NextRequest) {
     // ── Generate AI recap ──────────────────────────────────────────────
     let aiRecap = ''
 
-    // PRIMARY: z-ai-web-dev-sdk LLM (always available)
-    try {
-      const ZAI = (await import('z-ai-web-dev-sdk')).default
-      const zai = await ZAI.create()
+    // PRIMARY: Gemini Flash
+    const geminiKey = process.env.GEMINI_API_KEY
+    if (geminiKey) {
+      try {
+        const { GoogleGenerativeAI } = await import('@google/generative-ai')
+        const genAI = new GoogleGenerativeAI(geminiKey)
+        const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' })
 
-      const completion = await zai.chat.completions.create({
-        messages: [
-          {
-            role: 'assistant',
-            content: `You are an executive chief of staff. Synthesize the following raw stream of daily thoughts, bookmarks, and captures into a highly coherent, actionable 3-sentence daily retrospective analysis emphasizing primary themes, achievements, and structural focuses. Write in a warm, reflective, and slightly poetic tone. Use second person ("you"). Be specific about what was captured, not generic.`,
-          },
-          {
-            role: 'user',
-            content: `Here are my captured memories from the last ${hours} hours. Generate an executive recap summarizing what I focused on, key themes, and any insights or recommendations.\n\n${contextText}`,
-          },
-        ],
-        thinking: { type: 'disabled' },
-      })
+        const result = await model.generateContent({
+          contents: [
+            { role: 'user', parts: [{ text: 'You are an executive chief of staff. Synthesize the following daily captures into a 3-sentence retrospective emphasizing themes, achievements, and focus areas. Use second person ("you").' }] },
+            { role: 'model', parts: [{ text: 'Understood. I will generate a concise 3-sentence executive recap.' }] },
+            { role: 'user', parts: [{ text: `Memories from the last ${hours} hours:\n\n${contextText}` }] },
+          ],
+          generationConfig: { temperature: 0.5, maxOutputTokens: 300 },
+        })
 
-      aiRecap = completion.choices[0]?.message?.content || ''
-    } catch (aiErr) {
-      console.warn('z-ai-web-dev-sdk recap generation failed:', aiErr instanceof Error ? aiErr.message : 'Unknown')
+        aiRecap = result.response.text().trim()
+      } catch (geminiErr) {
+        console.warn('Gemini recap generation failed:', geminiErr instanceof Error ? geminiErr.message : 'Unknown')
+      }
+    }
 
-      // FALLBACK: Gemini
-      const geminiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY
-      if (geminiKey) {
+    // FALLBACK: Groq
+    if (!aiRecap) {
+      const groqKey = process.env.GROQ_API_KEY
+      if (groqKey && groqKey !== 'placeholder_groq_key') {
         try {
-          const { GoogleGenerativeAI } = await import('@google/generative-ai')
-          const genAI = new GoogleGenerativeAI(geminiKey)
-          const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' })
-
-          const result = await model.generateContent({
-            contents: [
-              { role: 'user', parts: [{ text: 'You are an executive chief of staff. Synthesize the following daily captures into a 3-sentence retrospective emphasizing themes, achievements, and focus areas. Use second person ("you").' }] },
-              { role: 'model', parts: [{ text: 'Understood. I will generate a concise 3-sentence executive recap.' }] },
-              { role: 'user', parts: [{ text: `Memories from the last ${hours} hours:\n\n${contextText}` }] },
-            ],
-            generationConfig: { temperature: 0.5, maxOutputTokens: 300 },
+          const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${groqKey}`,
+            },
+            body: JSON.stringify({
+              model: 'llama-3.1-8b-instant',
+              messages: [
+                {
+                  role: 'system',
+                  content: 'You are an executive chief of staff. Synthesize the following raw stream of daily thoughts, bookmarks, and captures into a highly coherent, actionable 3-sentence daily retrospective analysis emphasizing primary themes, achievements, and structural focuses. Write in a warm, reflective, and slightly poetic tone. Use second person ("you"). Be specific about what was captured, not generic.',
+                },
+                {
+                  role: 'user',
+                  content: `Here are my captured memories from the last ${hours} hours. Generate an executive recap summarizing what I focused on, key themes, and any insights or recommendations.\n\n${contextText}`,
+                },
+              ],
+              temperature: 0.5,
+              max_tokens: 300,
+            }),
           })
 
-          aiRecap = result.response.text().trim()
-        } catch (geminiErr) {
-          console.warn('Gemini recap generation failed:', geminiErr instanceof Error ? geminiErr.message : 'Unknown')
+          if (response.ok) {
+            const data = await response.json()
+            aiRecap = data.choices?.[0]?.message?.content?.trim() || ''
+          }
+        } catch (groqErr) {
+          console.warn('Groq recap generation failed:', groqErr instanceof Error ? groqErr.message : 'Unknown')
         }
       }
+    }
 
-      // ULTIMATE FALLBACK: Simple stats-based recap
-      if (!aiRecap) {
-        const typeBreakdown = memories.reduce((acc, m) => {
-          acc[m.type] = (acc[m.type] || 0) + 1
-          return acc
-        }, {} as Record<string, number>)
+    // ULTIMATE FALLBACK: Simple stats-based recap
+    if (!aiRecap) {
+      const typeBreakdown = memories.reduce((acc, m) => {
+        acc[m.type] = (acc[m.type] || 0) + 1
+        return acc
+      }, {} as Record<string, number>)
 
-        const typeSummary = Object.entries(typeBreakdown)
-          .map(([type, count]) => `${count} ${type}${count > 1 ? 's' : ''}`)
-          .join(', ')
+      const typeSummary = Object.entries(typeBreakdown)
+        .map(([type, count]) => `${count} ${type}${count > 1 ? 's' : ''}`)
+        .join(', ')
 
-        aiRecap = `You captured ${memories.length} memories in the last ${hours} hours (${typeSummary}). ${topTags.length > 0 ? `Your primary focus areas included: ${topTags.join(', ')}.` : ''} Keep capturing to unlock deeper AI-powered insights and thematic connections.`
-      }
+      aiRecap = `You captured ${memories.length} memories in the last ${hours} hours (${typeSummary}). ${topTags.length > 0 ? `Your primary focus areas included: ${topTags.join(', ')}.` : ''} Keep capturing to unlock deeper AI-powered insights and thematic connections.`
     }
 
     // ── Format memories for response ───────────────────────────────────
