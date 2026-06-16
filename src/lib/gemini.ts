@@ -1,6 +1,6 @@
 import { GoogleGenerativeAI } from '@google/generative-ai'
 
-const API_KEY = process.env.GEMINI_API_KEY || ''
+const API_KEY = process.env.NEXT_PUBLIC_GEMINI_API_KEY || ''
 let genAI: GoogleGenerativeAI | null = null
 
 function getGenAI(): GoogleGenerativeAI | null {
@@ -63,29 +63,5 @@ export async function generateSummary(content: string): Promise<string> {
     return result.response.text().trim()
   } catch {
     return ''
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-// ─── EMBEDDING GENERATION (text-embedding-004, 768-dim vectors) ──────
-// ═══════════════════════════════════════════════════════════════════════
-
-export async function generateEmbedding(text: string): Promise<number[] | null> {
-  const ai = getGenAI()
-  if (!ai) return null
-
-  try {
-    const embeddingModel = ai.getGenerativeModel('text-embedding-004')
-    const result = await embeddingModel.embedContent(text.slice(0, 2000))
-    const values = result.embedding.values
-
-    if (!values || values.length === 0) {
-      throw new Error('Empty embedding returned')
-    }
-
-    return values
-  } catch (err) {
-    console.warn('Embedding generation failed:', err instanceof Error ? err.message : 'Unknown')
-    return null
   }
 }

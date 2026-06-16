@@ -1,53 +1,32 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createServerClient } from '@supabase/ssr'
-import { cookies } from 'next/headers'
 import { db } from '@/lib/db'
+import { getGeminiFlashModel, getGeminiEmbeddingModel, aiCache, isProviderCoolingDown, markProviderFailed } from '@/lib/ai-cache'
 
 // ═══════════════════════════════════════════════════════════════════════
-// ─── SUPABASE AVAILABILITY CHECK ──────────────────────────────────────
+// ─── ULTRA-FAST CAPTURE ROUTE ────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════
+//
+// Architecture: Immediate Ingestion + Asynchronous Enrichment
+//
+// 1. Parse FormData → validate → save raw row to DB → return instantly
+// 2. After response: fire background AI (LLM, VLM, ASR) with timeouts
+// 3. All AI calls have 5s timeout max — never block forever
 // ═══════════════════════════════════════════════════════════════════════
 
-function isSupabaseConfigured(): boolean {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL
-  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-  return !!(url && key && url !== 'your_supabase_url_here' && key !== 'your_supabase_anon_key_here')
+// ─── TIMEOUT HELPER ──────────────────────────────────────────────────
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T | null> {
+  return Promise.race([
+    promise,
+    new Promise<null>((resolve) =>
+      setTimeout(() => {
+        console.warn(`[Timeout] ${label} exceeded ${ms}ms`)
+        resolve(null)
+      }, ms)
+    ),
+  ])
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// ─── SUPABASE SERVER CLIENT (cookie-aware for Route Handlers) ────────
-// ═══════════════════════════════════════════════════════════════════════
-
-async function getSupabaseRouteClient() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL!
-  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-
-  const cookieStore = await cookies()
-
-  const supabase = createServerClient(url, key, {
-    cookies: {
-      getAll() {
-        return cookieStore.getAll()
-      },
-      setAll(cookiesToSet) {
-        try {
-          cookiesToSet.forEach(({ name, value, options }) =>
-            cookieStore.set(name, value, options)
-          )
-        } catch {
-          // The `setAll` method was called from a Server Component.
-          // This can be ignored if you have middleware refreshing sessions.
-        }
-      },
-    },
-  })
-
-  return supabase
-}
-
-// ═══════════════════════════════════════════════════════════════════════
 // ─── KEYWORD-BASED AUTO-TAGGING (free, instant, always runs) ─────────
-// ═══════════════════════════════════════════════════════════════════════
-
 function autoGenerateTags(content: string, title: string): string[] {
   const text = `${title} ${content}`.toLowerCase()
   const tagMap: Record<string, string[]> = {
@@ -74,9 +53,7 @@ function autoGenerateTags(content: string, title: string): string[] {
   return tags.slice(0, 5)
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// ─── AI COGNITIVE SYNTHESIS (Gemini Flash — production-ready) ──────────
-// ═══════════════════════════════════════════════════════════════════════
+// ─── AI COGNITIVE SYNTHESIS ──────────────────────────────────────────
 
 interface AISynthesis {
   suggested_title: string
@@ -86,8 +63,7 @@ interface AISynthesis {
   connected_themes: string[]
 }
 
-async function synthesizeWithLLM(rawContent: string): Promise<AISynthesis | null> {
-  const systemPrompt = `You are the sovereign intelligence core of Aether — a personal second-brain system. Analyze this memory capture. Generate:
+const SYNTHESIS_SYSTEM_PROMPT = `You are the sovereign intelligence core of Aether — a personal second-brain system. Analyze this memory capture. Generate:
 1. A clean, concise suggested title (max 60 chars)
 2. A natural 2-sentence summary
 3. A deep professional insight connecting this to broader patterns
@@ -103,113 +79,124 @@ Return STRICTLY a valid JSON object. No markdown, no extra text:
   "connected_themes": ["theme1", "theme2"]
 }`
 
-  // ── PRIMARY: Gemini Flash ────────────────────────────────────────
-  const geminiKey = process.env.GEMINI_API_KEY
-  if (geminiKey) {
-    try {
-      const { GoogleGenerativeAI } = await import('@google/generative-ai')
-      const genAI = new GoogleGenerativeAI(geminiKey)
-      const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' })
+function parseSynthesisResponse(responseText: string): AISynthesis {
+  let jsonStr = responseText.trim()
+  const jsonMatch = jsonStr.match(/\{[\s\S]*\}/)
+  if (jsonMatch) jsonStr = jsonMatch[0]
 
-      const result = await model.generateContent({
-        contents: [
-          { role: 'user', parts: [{ text: systemPrompt }] },
-          { role: 'model', parts: [{ text: 'Understood. I will return strictly a JSON object with suggested_title, summary, deep_insight, tags, and connected_themes fields.' }] },
-          { role: 'user', parts: [{ text: rawContent.slice(0, 4000) }] },
-        ],
-        generationConfig: { temperature: 0.4, maxOutputTokens: 800 },
-      })
+  const parsed = JSON.parse(jsonStr)
 
-      const responseText = result.response.text()
-      let jsonStr = responseText.trim()
-      const jsonMatch = jsonStr.match(/\{[\s\S]*\}/)
-      if (jsonMatch) jsonStr = jsonMatch[0]
-
-      const parsed = JSON.parse(jsonStr)
-
-      if (
-        typeof parsed.suggested_title === 'string' &&
-        typeof parsed.summary === 'string' &&
-        typeof parsed.deep_insight === 'string' &&
-        Array.isArray(parsed.tags)
-      ) {
-        return {
-          suggested_title: parsed.suggested_title,
-          summary: parsed.summary,
-          deep_insight: parsed.deep_insight,
-          tags: parsed.tags.filter((t: unknown) => typeof t === 'string').slice(0, 5),
-          connected_themes: Array.isArray(parsed.connected_themes)
-            ? parsed.connected_themes.filter((t: unknown) => typeof t === 'string').slice(0, 3)
-            : [],
-        }
-      }
-
-      return null
-    } catch (err) {
-      console.warn('Gemini synthesis failed:', err instanceof Error ? err.message : 'Unknown')
-    }
+  if (
+    typeof parsed.suggested_title !== 'string' ||
+    typeof parsed.summary !== 'string' ||
+    typeof parsed.deep_insight !== 'string' ||
+    !Array.isArray(parsed.tags)
+  ) {
+    throw new Error('Invalid synthesis JSON structure')
   }
 
-  // ── FALLBACK: Groq (fast & cheap) ──────────────────────────────
-  const groqKey = process.env.GROQ_API_KEY
-  if (groqKey && groqKey !== 'placeholder_groq_key') {
-    try {
-      const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${groqKey}`,
-        },
-        body: JSON.stringify({
-          model: 'llama-3.1-8b-instant',
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: rawContent.slice(0, 4000) },
-          ],
-          temperature: 0.4,
-          max_tokens: 800,
-        }),
-      })
-
-      if (response.ok) {
-        const data = await response.json()
-        const responseText = data.choices?.[0]?.message?.content
-        if (responseText) {
-          let jsonStr = responseText.trim()
-          const jsonMatch = jsonStr.match(/\{[\s\S]*\}/)
-          if (jsonMatch) jsonStr = jsonMatch[0]
-
-          const parsed = JSON.parse(jsonStr)
-
-          if (
-            typeof parsed.suggested_title === 'string' &&
-            typeof parsed.summary === 'string' &&
-            typeof parsed.deep_insight === 'string' &&
-            Array.isArray(parsed.tags)
-          ) {
-            return {
-              suggested_title: parsed.suggested_title,
-              summary: parsed.summary,
-              deep_insight: parsed.deep_insight,
-              tags: parsed.tags.filter((t: unknown) => typeof t === 'string').slice(0, 5),
-              connected_themes: Array.isArray(parsed.connected_themes)
-                ? parsed.connected_themes.filter((t: unknown) => typeof t === 'string').slice(0, 3)
-                : [],
-            }
-          }
-        }
-      }
-    } catch (err) {
-      console.warn('Groq synthesis failed:', err instanceof Error ? err.message : 'Unknown')
-    }
+  return {
+    suggested_title: parsed.suggested_title,
+    summary: parsed.summary,
+    deep_insight: parsed.deep_insight,
+    tags: parsed.tags.filter((t: unknown) => typeof t === 'string').slice(0, 5),
+    connected_themes: Array.isArray(parsed.connected_themes)
+      ? parsed.connected_themes.filter((t: unknown) => typeof t === 'string').slice(0, 3)
+      : [],
   }
-
-  return null
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// ─── IMAGE VISION ANALYSIS (Gemini Vision — production-ready) ──────────
-// ═══════════════════════════════════════════════════════════════════════
+async function synthesizeWithGemini(rawContent: string): Promise<AISynthesis> {
+  const model = getGeminiFlashModel()
+
+  const result = await model.generateContent({
+    contents: [
+      { role: 'user', parts: [{ text: SYNTHESIS_SYSTEM_PROMPT }] },
+      { role: 'model', parts: [{ text: 'Understood. I will return strictly a JSON object with suggested_title, summary, deep_insight, tags, and connected_themes fields.' }] },
+      { role: 'user', parts: [{ text: rawContent.slice(0, 4000) }] },
+    ],
+    generationConfig: { temperature: 0.4, maxOutputTokens: 600 },
+  })
+
+  const responseText = result.response.text()
+  return parseSynthesisResponse(responseText)
+}
+
+async function synthesizeWithGroq(rawContent: string): Promise<AISynthesis> {
+  const groqKey = process.env.GROQ_API_KEY
+  if (!groqKey || groqKey === 'placeholder_groq_key') {
+    throw new Error('Groq API key not configured')
+  }
+
+  const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${groqKey}`,
+    },
+    body: JSON.stringify({
+      model: 'llama-3.1-8b-instant',
+      messages: [
+        { role: 'system', content: SYNTHESIS_SYSTEM_PROMPT },
+        { role: 'user', content: rawContent.slice(0, 4000) },
+      ],
+      temperature: 0.4,
+      max_tokens: 600,
+    }),
+  })
+
+  if (!response.ok) {
+    throw new Error(`Groq API returned ${response.status}`)
+  }
+
+  const data = await response.json()
+  const responseText = data.choices?.[0]?.message?.content
+  if (!responseText) {
+    throw new Error('Empty Groq response')
+  }
+
+  return parseSynthesisResponse(responseText)
+}
+
+async function synthesizeWithLLM(rawContent: string): Promise<AISynthesis | null> {
+  const promises: Promise<AISynthesis>[] = []
+
+  if (process.env.GEMINI_API_KEY && !isProviderCoolingDown('gemini')) {
+    promises.push(
+      synthesizeWithGemini(rawContent).catch(err => {
+        const msg = err instanceof Error ? err.message : ''
+        if (msg.includes('429') || msg.includes('quota') || msg.includes('Too Many Requests')) {
+          markProviderFailed('gemini', 30)
+        }
+        throw err
+      })
+    )
+  }
+
+  const groqKey = process.env.GROQ_API_KEY
+  if (groqKey && groqKey !== 'placeholder_groq_key' && !isProviderCoolingDown('groq')) {
+    promises.push(
+      synthesizeWithGroq(rawContent).catch(err => {
+        const msg = err instanceof Error ? err.message : ''
+        if (msg.includes('403') || msg.includes('429')) {
+          markProviderFailed('groq', msg.includes('429') ? 30 : 60)
+        }
+        throw err
+      })
+    )
+  }
+
+  if (promises.length === 0) return null
+
+  try {
+    // Race with 5s timeout — never block enrichment forever
+    return await withTimeout(Promise.any(promises), 5000, 'LLM synthesis')
+  } catch {
+    return null
+  }
+}
+
+// ─── IMAGE VISION ANALYSIS ───────────────────────────────────────────
 
 interface ImageAnalysis {
   description: string
@@ -219,18 +206,11 @@ interface ImageAnalysis {
 }
 
 async function analyzeImageWithVLM(imageFile: File): Promise<ImageAnalysis | null> {
-  const geminiKey = process.env.GEMINI_API_KEY
-  if (!geminiKey) {
-    console.warn('No GEMINI_API_KEY set — image analysis unavailable')
-    return null
-  }
+  if (!process.env.GEMINI_API_KEY || isProviderCoolingDown('gemini')) return null
 
   try {
-    const { GoogleGenerativeAI } = await import('@google/generative-ai')
-    const genAI = new GoogleGenerativeAI(geminiKey)
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' })
+    const model = getGeminiFlashModel()
 
-    // Convert image to base64
     const arrayBuffer = await imageFile.arrayBuffer()
     const base64Image = Buffer.from(arrayBuffer).toString('base64')
     const mimeType = imageFile.type || 'image/png'
@@ -278,14 +258,11 @@ Return STRICTLY valid JSON only, no markdown or extra text.`
   }
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// ─── AUDIO TRANSCRIPTION (Groq Whisper — production-ready) ────────────
-// ═══════════════════════════════════════════════════════════════════════
+// ─── AUDIO TRANSCRIPTION ─────────────────────────────────────────────
 
 async function transcribeAudio(audioFile: File): Promise<string> {
-  // Try Groq Whisper (fast & accurate)
   const groqKey = process.env.GROQ_API_KEY
-  if (groqKey && groqKey !== 'placeholder_groq_key') {
+  if (groqKey && groqKey !== 'placeholder_groq_key' && !isProviderCoolingDown('groq')) {
     try {
       const formData = new FormData()
       formData.append('file', audioFile)
@@ -312,89 +289,7 @@ async function transcribeAudio(audioFile: File): Promise<string> {
   return ''
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// ─── IMAGE UPLOAD TO SUPABASE STORAGE (when configured) ──────────────
-// ═══════════════════════════════════════════════════════════════════════
-
-async function uploadImageToStorage(
-  imageFile: File,
-  userId: string,
-  supabase: Awaited<ReturnType<typeof getSupabaseRouteClient>>
-): Promise<string | null> {
-  try {
-    const ext = imageFile.name.split('.').pop() || 'png'
-    const filename = `${userId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`
-
-    const arrayBuffer = await imageFile.arrayBuffer()
-    const buffer = Buffer.from(arrayBuffer)
-
-    const { error: uploadError } = await supabase.storage
-      .from('memories')
-      .upload(filename, buffer, {
-        contentType: imageFile.type || 'image/png',
-        upsert: false,
-      })
-
-    if (uploadError) {
-      console.warn('Supabase Storage upload failed:', uploadError.message)
-      return null
-    }
-
-    const { data: urlData } = supabase.storage
-      .from('memories')
-      .getPublicUrl(filename)
-
-    return urlData?.publicUrl || null
-  } catch (err) {
-    console.warn('Image upload error:', err instanceof Error ? err.message : 'Unknown')
-    return null
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-// ─── COLLECTION TAG MATCHING (Supabase only) ─────────────────────────
-// ═══════════════════════════════════════════════════════════════════════
-
-async function matchOrCreateCollections(
-  supabase: Awaited<ReturnType<typeof getSupabaseRouteClient>>,
-  userId: string,
-  memoryId: string,
-  tags: string[]
-): Promise<void> {
-  if (tags.length === 0) return
-
-  try {
-    const { data: existingCollections } = await supabase
-      .from('collections')
-      .select('id, name')
-      .eq('user_id', userId)
-
-    if (existingCollections && existingCollections.length > 0) {
-      for (const tag of tags) {
-        const tagLower = tag.toLowerCase()
-        const matched = existingCollections.find((c: { id: string; name: string }) =>
-          c.name.toLowerCase().includes(tagLower) || tagLower.includes(c.name.toLowerCase())
-        )
-
-        if (matched) {
-          await supabase
-            .from('memory_collections')
-            .insert({
-              memory_id: memoryId,
-              collection_id: matched.id,
-            })
-          break
-        }
-      }
-    }
-  } catch (err) {
-    console.warn('Collection matching failed:', err instanceof Error ? err.message : 'Unknown')
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-// ─── SAVE TO PRISMA (Local Fallback — always works) ─────────────────
-// ═══════════════════════════════════════════════════════════════════════
+// ─── SAVE TO PRISMA ──────────────────────────────────────────────────
 
 async function saveToPrisma(data: {
   type: string
@@ -457,9 +352,7 @@ async function saveToPrisma(data: {
   }
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// ─── FIND CONNECTED MEMORIES (for AI Brain) ─────────────────────────
-// ═══════════════════════════════════════════════════════════════════════
+// ─── FIND CONNECTED MEMORIES ────────────────────────────────────────
 
 async function findConnectedMemories(
   newMemoryTags: string[],
@@ -467,7 +360,6 @@ async function findConnectedMemories(
   newMemoryId: string
 ): Promise<{ id: string; title: string; reason: string }[]> {
   try {
-    // Get all existing memories from Prisma
     const allMemories = await db.memory.findMany({
       where: {
         id: { not: newMemoryId },
@@ -485,7 +377,6 @@ async function findConnectedMemories(
 
     if (allMemories.length === 0) return []
 
-    // ── Quick tag-based matching (instant, no LLM needed) ─────────
     const connected: { id: string; title: string; reason: string; score: number }[] = []
 
     for (const mem of allMemories) {
@@ -501,7 +392,6 @@ async function findConnectedMemories(
         })
       }
 
-      // Content similarity — check for common meaningful words
       const contentWords = mem.content.toLowerCase().split(/\s+/).filter(w => w.length > 4)
       const newWords = newMemoryContent.toLowerCase().split(/\s+/).filter(w => w.length > 4)
       const overlapWords = contentWords.filter(w => newWords.includes(w))
@@ -520,7 +410,6 @@ async function findConnectedMemories(
       }
     }
 
-    // Sort by score and return top 5
     return connected
       .sort((a, b) => b.score - a.score)
       .slice(0, 5)
@@ -531,12 +420,37 @@ async function findConnectedMemories(
   }
 }
 
-// ═══════════════════════════════════════════════════════════════════════
+// ─── INLINE EMBEDDING GENERATION ─────────────────────────────────────
+
+async function generateInlineEmbedding(
+  memoryId: string,
+  aiTitle: string | null,
+  aiSummary: string | null,
+  enrichedContent: string
+): Promise<void> {
+  try {
+    const embeddingModel = getGeminiEmbeddingModel()
+    if (embeddingModel) {
+      const embeddingContent = [aiTitle, aiSummary, enrichedContent].filter(Boolean).join(' ').slice(0, 2000)
+      const embedResult = await embeddingModel.embedContent(embeddingContent)
+      const embeddingVector = embedResult.embedding.values
+      if (embeddingVector && embeddingVector.length > 0) {
+        const { createAdminClient } = await import('@/lib/supabase/admin')
+        const adminClient = createAdminClient()
+        await adminClient.from('memories').update({ embedding: embeddingVector }).eq('id', memoryId)
+      }
+    }
+  } catch (embedErr) {
+    console.warn('Inline embedding generation failed:', embedErr instanceof Error ? embedErr.message : 'Unknown')
+  }
+}
+
 // ─── BACKGROUND ENRICHMENT WORKER ────────────────────────────────────
-// ═══════════════════════════════════════════════════════════════════════
-// This function runs AFTER the response is sent. It performs all the
-// expensive AI operations (LLM synthesis, VLM analysis, transcription)
-// and then updates the database row with the enriched data.
+//
+// OPTIMIZED: All AI calls have timeouts. Never block forever.
+// Phase 1: transcribe + VLM + synthesis + upload (parallel, with timeouts)
+// Phase 2: Merge → update DB
+// Phase 3: Embedding (parallel with Phase 2)
 
 async function backgroundEnrichMemory(
   memoryId: string,
@@ -544,24 +458,48 @@ async function backgroundEnrichMemory(
   memoryType: string,
   imageFile: File | null,
   audioFile: File | null,
-  hasUrl: boolean,
-  url: string,
-  supabaseUserId: string | null
+  _hasUrl: boolean,
+  _url: string,
+  _supabaseUserId: string | null
 ): Promise<void> {
   try {
-    // ── 1. Audio transcription (if voice capture) ──────────────────
-    let audioTranscript = ''
-    if (audioFile && audioFile.size > 0) {
-      audioTranscript = await transcribeAudio(audioFile)
-    }
+    const startTime = Date.now()
 
-    // ── 2. Image analysis (if image capture) ───────────────────────
-    let imageAnalysis: ImageAnalysis | null = null
-    if (imageFile && imageFile.size > 0) {
-      imageAnalysis = await analyzeImageWithVLM(imageFile)
-    }
+    // ── SHORT CONTENT FAST PATH: Skip AI synthesis for trivial content ──
+    const skipSynthesis = rawContent.trim().length < 50
 
-    // ── 3. Build enriched content ──────────────────────────────────
+    // ══════════════════════════════════════════════════════════════════
+    // ── PHASE 1: PARALLEL — All independent operations with timeouts ──
+    // ══════════════════════════════════════════════════════════════════
+    const phase1Start = Date.now()
+
+    const [audioResult, imageResult, synthesisResult] = await Promise.allSettled([
+      // Audio transcription (if voice capture) — 5s timeout
+      audioFile && audioFile.size > 0
+        ? withTimeout(transcribeAudio(audioFile), 5000, 'Audio transcription')
+        : Promise.resolve(''),
+
+      // Image VLM analysis (if image capture) — 5s timeout
+      imageFile && imageFile.size > 0
+        ? withTimeout(analyzeImageWithVLM(imageFile), 5000, 'Image VLM analysis')
+        : Promise.resolve<ImageAnalysis | null>(null),
+
+      // AI Cognitive Synthesis — 5s timeout, skip for short content
+      !skipSynthesis
+        ? withTimeout(synthesizeWithLLM(rawContent), 5000, 'LLM synthesis')
+        : Promise.resolve<AISynthesis | null>(null),
+    ])
+
+    console.log(`[Background Enrichment] Phase 1 (parallel) completed in ${Date.now() - phase1Start}ms`)
+
+    const audioTranscript = audioResult.status === 'fulfilled' ? audioResult.value : ''
+    const imageAnalysis = imageResult.status === 'fulfilled' ? imageResult.value : null
+    const synthesis = synthesisResult.status === 'fulfilled' ? synthesisResult.value : null
+
+    // ══════════════════════════════════════════════════════════════════
+    // ── PHASE 2: Merge results → build enriched content → update DB ────
+    // ══════════════════════════════════════════════════════════════════
+
     let enrichedContent = rawContent
     if (audioTranscript) {
       enrichedContent += (enrichedContent ? '\n\n' : '') + `Voice Transcript:\n${audioTranscript}`
@@ -575,9 +513,6 @@ async function backgroundEnrichMemory(
         enrichedContent += (enrichedContent ? '\n\n' : '') + imageContentParts.join('\n\n')
       }
     }
-
-    // ── 4. AI Cognitive Synthesis ──────────────────────────────────
-    const synthesis = await synthesizeWithLLM(enrichedContent)
 
     let aiTitle: string | null = null
     let aiSummary: string | null = null
@@ -604,81 +539,47 @@ async function backgroundEnrichMemory(
       aiTags = allTags.slice(0, 6)
     }
 
-    // ── 5. Upload image to Supabase Storage (if applicable) ────────
-    let uploadedImageUrl: string | null = null
-    if (imageFile && imageFile.size > 0 && supabaseUserId && isSupabaseConfigured()) {
-      try {
-        const supabase = await getSupabaseRouteClient()
-        uploadedImageUrl = await uploadImageToStorage(imageFile, supabaseUserId, supabase)
-      } catch (err) {
-        console.warn('Background image upload failed:', err instanceof Error ? err.message : 'Unknown')
-      }
-    }
-
-    // ── 6. Update database with enriched data ─────────────────────
-    const updateData: Record<string, unknown> = {
+    // Build DB update payload
+    const prismaUpdateData: Record<string, unknown> = {
       content: enrichedContent,
       tags: aiTags.join(','),
     }
-    if (aiTitle) updateData.title = aiTitle
-    if (aiSummary) updateData.summary = aiSummary
-    if (aiDeepInsight) updateData.deep_insight = aiDeepInsight
-    if (uploadedImageUrl) updateData.image_url = uploadedImageUrl
+    if (aiTitle) prismaUpdateData.title = aiTitle
+    if (aiSummary) prismaUpdateData.summary = aiSummary
+    if (aiDeepInsight) prismaUpdateData.deepInsight = aiDeepInsight
 
-    // Try Supabase update first
-    if (supabaseUserId && isSupabaseConfigured()) {
-      try {
-        const supabase = await getSupabaseRouteClient()
-        const { error } = await supabase
-          .from('memories')
-          .update(updateData)
-          .eq('id', memoryId)
+    // ── Phase 2+3: DB update + embedding in parallel ──────────────────
+    const updatePromises: Promise<unknown>[] = []
 
-        if (!error) {
-          // Collection tag matching
-          await matchOrCreateCollections(supabase, supabaseUserId, memoryId, aiTags)
-
-          // Trigger embedding generation in background
-          try {
-            const embeddingContent = [aiTitle, aiSummary, enrichedContent].filter(Boolean).join(' ').slice(0, 2000)
-            await fetch('/api/generate-embedding', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ memoryId, content: embeddingContent }),
-            })
-          } catch {
-            // Non-blocking — embedding is nice-to-have
-          }
-
-          console.log(`[Background Enrichment] Memory ${memoryId} enriched successfully (Supabase)`)
-          return
+    // DB Update
+    updatePromises.push(
+      (async () => {
+        try {
+          await db.memory.update({
+            where: { id: memoryId },
+            data: prismaUpdateData,
+          })
+          console.log(`[Background Enrichment] Memory ${memoryId} enriched successfully (Prisma) in ${Date.now() - startTime}ms`)
+        } catch (err) {
+          console.warn('Prisma enrichment update failed:', err instanceof Error ? err.message : 'Unknown')
         }
-        console.warn('Supabase enrichment update failed:', error.message)
-      } catch (err) {
-        console.warn('Supabase enrichment failed, falling back to Prisma:', err instanceof Error ? err.message : 'Unknown')
-      }
+      })()
+    )
+
+    // Inline embedding (parallel with DB update)
+    if (process.env.GEMINI_API_KEY) {
+      updatePromises.push(
+        withTimeout(
+          generateInlineEmbedding(memoryId, aiTitle, aiSummary, enrichedContent),
+          5000,
+          'Embedding generation'
+        )
+      )
     }
 
-    // Prisma fallback for enrichment update
-    try {
-      const prismaUpdateData: Record<string, unknown> = {
-        content: enrichedContent,
-        tags: aiTags.join(','),
-      }
-      if (aiTitle) prismaUpdateData.title = aiTitle
-      if (aiSummary) prismaUpdateData.summary = aiSummary
-      if (aiDeepInsight) prismaUpdateData.deepInsight = aiDeepInsight
-      if (uploadedImageUrl) prismaUpdateData.imageUrl = uploadedImageUrl
+    await Promise.allSettled(updatePromises)
 
-      await db.memory.update({
-        where: { id: memoryId },
-        data: prismaUpdateData,
-      })
-
-      console.log(`[Background Enrichment] Memory ${memoryId} enriched successfully (Prisma)`)
-    } catch (err) {
-      console.warn('Prisma enrichment update failed:', err instanceof Error ? err.message : 'Unknown')
-    }
+    console.log(`[Background Enrichment] Total enrichment time for ${memoryId}: ${Date.now() - startTime}ms`)
   } catch (err) {
     console.error('[Background Enrichment] Fatal error:', err instanceof Error ? err.message : 'Unknown')
   }
@@ -687,15 +588,6 @@ async function backgroundEnrichMemory(
 // ═══════════════════════════════════════════════════════════════════════
 // ─── MAIN POST HANDLER ──────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
-//
-// ARCHITECTURE: Immediate Ingestion + Asynchronous Enrichment
-//
-// 1. Parse FormData → validate → save raw row to DB → return instantly (~200ms)
-// 2. After response: fire background AI (LLM, VLM, ASR) → update row with enriched data
-//
-// The frontend uses Optimistic UI to show a placeholder immediately,
-// then replaces it with the real memory when the API responds, and
-// later updates it again when AI enrichment completes via polling or refetch.
 
 export async function POST(req: NextRequest) {
   try {
@@ -706,7 +598,6 @@ export async function POST(req: NextRequest) {
     const imageFile = formData.get('image') as File | null
     const audioFile = formData.get('audio') as File | null
 
-    // Validate: at least one content source
     const hasText = text.trim().length > 0
     const hasUrl = url.trim().length > 0
     const hasImage = imageFile && imageFile.size > 0
@@ -724,7 +615,6 @@ export async function POST(req: NextRequest) {
     if (hasAudio && hasImage) memoryType = 'voice'
     if (!hasAudio && !hasImage && !hasUrl) memoryType = 'text'
 
-    // Build raw content from what we have immediately
     let rawContent = ''
     if (hasText) rawContent += text.trim()
     if (hasUrl) rawContent += (rawContent ? '\n\n' : '') + `URL: ${url.trim()}`
@@ -735,111 +625,13 @@ export async function POST(req: NextRequest) {
     // ── STEP 3: Instant keyword-based tags (no AI, zero latency) ───
     const instantTags = autoGenerateTags(rawContent, text.slice(0, 80))
 
-    // ── STEP 4: Immediate DB save (raw, no AI enrichment yet) ──────
-    let savedMemoryId: string
-    let supabaseUserId: string | null = null
-    let savedMemory: Record<string, unknown>
-
-    // Try Supabase first
-    if (isSupabaseConfigured()) {
-      try {
-        const supabase = await getSupabaseRouteClient()
-        const { data: { user }, error: authError } = await supabase.auth.getUser()
-
-        if (!authError && user) {
-          supabaseUserId = user.id
-
-          // Upload image immediately (storage is fast, doesn't need AI)
-          let imageUrl: string | null = null
-          if (hasImage) {
-            imageUrl = await uploadImageToStorage(imageFile, user.id, supabase)
-          }
-
-          const { data: memoryRow, error: insertError } = await supabase
-            .from('memories')
-            .insert({
-              user_id: user.id,
-              type: memoryType,
-              title: hasText ? text.slice(0, 80) : hasUrl ? 'Saved Link' : hasAudio ? 'Voice Note' : 'Image Capture',
-              content: rawContent,
-              summary: null, // Will be filled by background enrichment
-              deep_insight: null,
-              tags: instantTags.join(','),
-              source_url: hasUrl ? url.trim() : null,
-              image_url: imageUrl,
-              image_preview: null,
-              file_url: null,
-              recap: null,
-              is_favorite: false,
-            })
-            .select('*, memory_collections(collection_id, collections(id, name, color, icon))')
-            .single()
-
-          if (!insertError && memoryRow) {
-            const row = memoryRow as Record<string, unknown>
-            savedMemoryId = row.id as string
-            const memoryCollections = (row.memory_collections as Array<{ collection_id: string; collections: { id: string; name: string; color: string; icon: string } }>) || []
-
-            savedMemory = {
-              id: row.id,
-              type: (row.type as string) || 'text',
-              title: (row.title as string) || '',
-              content: (row.content as string) || '',
-              summary: (row.summary as string) || null,
-              deepInsight: (row.deep_insight as string) || null,
-              tags: row.tags ? (row.tags as string).split(',').filter(Boolean) : [],
-              sourceUrl: (row.source_url as string) || null,
-              fileUrl: (row.file_url as string) || null,
-              imagePreview: (row.image_preview as string) || null,
-              imageUrl: (row.image_url as string) || null,
-              recap: (row.recap as string) || null,
-              isFavorite: (row.is_favorite as boolean) || false,
-              createdAt: (row.created_at as string) || new Date().toISOString(),
-              updatedAt: (row.updated_at as string) || new Date().toISOString(),
-              collections: memoryCollections.map(mc => ({
-                id: mc.collections.id,
-                name: mc.collections.name,
-                color: mc.collections.color,
-                icon: mc.collections.icon,
-              })),
-              enriching: true, // Signal to frontend that AI enrichment is pending
-            }
-
-            // ── INSTANT RETURN — user sees memory immediately ────────
-            const response = NextResponse.json({ success: true, memory: savedMemory })
-
-            // ── BACKGROUND ENRICHMENT (fire and forget) ──────────────
-            // This runs AFTER the response is sent to the client
-            backgroundEnrichMemory(
-              savedMemoryId,
-              rawContent,
-              memoryType,
-              hasImage ? imageFile : null,
-              hasAudio ? audioFile : null,
-              hasUrl,
-              url,
-              supabaseUserId
-            ).catch(err => {
-              console.error('[Background Enrichment] Unhandled error:', err instanceof Error ? err.message : 'Unknown')
-            })
-
-            return response
-          }
-
-          console.warn('Supabase insert failed, falling back to Prisma:', insertError?.message)
-        }
-      } catch (err) {
-        console.warn('Supabase capture failed, falling back to Prisma:', err instanceof Error ? err.message : 'Unknown')
-      }
-    }
-
-    // ── PRISMA FALLBACK (local dev only — SQLite won't work on Vercel) ──
+    // ── STEP 4: Immediate DB save ──────────────────────────────────
     try {
       const memory = await saveToPrisma({
         type: memoryType,
         title: hasText ? text.slice(0, 80) : hasUrl ? 'Saved Link' : hasAudio ? 'Voice Note' : 'Image Capture',
         content: rawContent,
-        summary: null, // Will be filled by background enrichment
+        summary: null,
         deepInsight: null,
         tags: instantTags,
         sourceUrl: hasUrl ? url.trim() : null,
@@ -848,34 +640,37 @@ export async function POST(req: NextRequest) {
         recap: null,
       })
 
-      savedMemoryId = memory.id
-      savedMemory = {
+      const savedMemory = {
         ...memory,
-        enriching: true, // Signal to frontend that AI enrichment is pending
+        enriching: true,
       }
 
-      // ── INSTANT RETURN — user sees memory immediately ────────────────
+      // ── INSTANT RETURN — user sees memory immediately ────────────
       const response = NextResponse.json({ success: true, memory: savedMemory })
 
-      // ── BACKGROUND ENRICHMENT (fire and forget) ──────────────────────
+      // ── Invalidate caches (new memory changes everything) ────────
+      aiCache.invalidate('brain:')
+      aiCache.invalidate('reap:')
+
+      // ── BACKGROUND ENRICHMENT (fire and forget) ──────────────────
       backgroundEnrichMemory(
-        savedMemoryId,
+        memory.id,
         rawContent,
         memoryType,
         hasImage ? imageFile : null,
         hasAudio ? audioFile : null,
         hasUrl,
         url,
-        supabaseUserId
+        null // No Supabase user in local mode
       ).catch(err => {
         console.error('[Background Enrichment] Unhandled error:', err instanceof Error ? err.message : 'Unknown')
       })
 
       return response
     } catch (prismaErr) {
-      console.error('Prisma fallback also failed:', prismaErr instanceof Error ? prismaErr.message : 'Unknown')
+      console.error('Prisma save failed:', prismaErr instanceof Error ? prismaErr.message : 'Unknown')
       return NextResponse.json(
-        { error: 'Database not configured for production. Please set NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, and SUPABASE_SERVICE_ROLE_KEY in your Vercel environment variables.' },
+        { error: 'Database save failed.' },
         { status: 503 }
       )
     }

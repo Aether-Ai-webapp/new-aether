@@ -1,25 +1,9 @@
 'use client'
 
 import React, { useState, useCallback, useRef, useEffect } from 'react'
-import {
-  FileText,
-  Link2,
-  ImageIcon,
-  Mic,
-  MicOff,
-  Loader2,
-  Crown,
-  Upload,
-  X,
-  Play,
-  Square,
-  CheckCircle2,
-  Sparkles,
-} from 'lucide-react'
-import { useAetherStore } from '@/lib/aether-store'
+import { FileText, Link2, ImageIcon, Mic, Loader2, Crown, Sparkles, Square, Play, StopCircle } from 'lucide-react'
+import { useAetherStore, type MemoryType } from '@/lib/aether-store'
 import { useIsMobile } from '@/hooks/use-mobile'
-import { useCapture } from '@/hooks/useCapture'
-import { cn } from '@/lib/utils'
 import {
   Sheet,
   SheetContent,
@@ -40,130 +24,21 @@ import { Textarea } from '@/components/ui/textarea'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { toast } from 'sonner'
-import { motion, AnimatePresence } from 'framer-motion'
-
-// ═══════════════════════════════════════════════════════════════════════
-// ─── TYPES ──────────────────────────────────────────────────────────
-// ═══════════════════════════════════════════════════════════════════════
 
 interface AddMemorySheetProps {
   open: boolean
   onOpenChange: (open: boolean) => void
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// ─── WAVEFORM ANIMATION COMPONENT ───────────────────────────────────
-// ═══════════════════════════════════════════════════════════════════════
-
-function WaveformBars({ isActive }: { isActive: boolean }) {
-  const bars = 24
-  return (
-    <div className="flex items-center justify-center gap-[3px] h-12">
-      {Array.from({ length: bars }).map((_, i) => (
-        <motion.div
-          key={i}
-          className="w-[3px] rounded-full bg-gradient-to-t from-primary/60 to-primary"
-          animate={
-            isActive
-              ? {
-                  height: [8, Math.random() * 40 + 8, 8],
-                }
-              : { height: 8 }
-          }
-          transition={
-            isActive
-              ? {
-                  duration: 0.6 + Math.random() * 0.4,
-                  repeat: Infinity,
-                  repeatType: 'reverse',
-                  delay: i * 0.03,
-                  ease: 'easeInOut',
-                }
-              : { duration: 0.3 }
-          }
-        />
-      ))}
-    </div>
-  )
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-// ─── SUCCESS ANIMATION ──────────────────────────────────────────────
-// ═══════════════════════════════════════════════════════════════════════
-
-function SuccessOverlay({ show }: { show: boolean }) {
-  return (
-    <AnimatePresence>
-      {show && (
-        <motion.div
-          className="absolute inset-0 z-50 flex flex-col items-center justify-center rounded-lg bg-background/80 backdrop-blur-md"
-          initial={{ opacity: 0, scale: 0.9 }}
-          animate={{ opacity: 1, scale: 1 }}
-          exit={{ opacity: 0, scale: 0.9 }}
-          transition={{ duration: 0.3, ease: 'easeOut' }}
-        >
-          <motion.div
-            initial={{ scale: 0 }}
-            animate={{ scale: 1 }}
-            transition={{ type: 'spring', stiffness: 300, damping: 20, delay: 0.1 }}
-          >
-            <div className="relative">
-              <CheckCircle2 className="size-16 text-emerald-500" />
-              <motion.div
-                className="absolute inset-0 size-16 rounded-full bg-emerald-500/20"
-                animate={{ scale: [1, 1.5, 1], opacity: [0.5, 0, 0.5] }}
-                transition={{ duration: 1.5, repeat: Infinity }}
-              />
-            </div>
-          </motion.div>
-          <motion.p
-            className="mt-3 text-sm font-medium text-emerald-600 dark:text-emerald-400"
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.3 }}
-          >
-            Memory captured
-          </motion.p>
-          <motion.div
-            className="mt-1 flex items-center gap-1 text-xs text-muted-foreground"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ delay: 0.5 }}
-          >
-            <Sparkles className="size-3" />
-            AI is synthesizing your memory...
-          </motion.div>
-        </motion.div>
-      )}
-    </AnimatePresence>
-  )
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-// ─── MAIN COMPONENT ─────────────────────────────────────────────────
-// ═══════════════════════════════════════════════════════════════════════
-
 export function AddMemorySheet({ open, onOpenChange }: AddMemorySheetProps) {
   const isMobile = useIsMobile()
-  const memories = useAetherStore((s) => s.memories)
-  const isAuthenticated = useAetherStore((s) => s.isAuthenticated)
-  const setShowAuthModal = useAetherStore((s) => s.setShowAuthModal)
+  const saveMemory = useAetherStore((s) => s.saveMemory)
   const requireAuth = useAetherStore((s) => s.requireAuth)
+  const isAuthenticated = useAetherStore((s) => s.isAuthenticated)
+  const memories = useAetherStore((s) => s.memories)
 
-  const {
-    captureText,
-    captureLink,
-    captureImage,
-    captureVoice,
-    isRecording,
-    startRecording,
-    stopRecording,
-    recordingDuration,
-    isCapturing,
-  } = useCapture()
-
-  // ── Free plan limit ────────────────────────────────────────────────
-  const FREE_MEMORY_LIMIT = 15
+  // ── Free plan limit ──────────────────────────────────────────────────
+  const FREE_MEMORY_LIMIT = 50
 
   // Text tab state
   const [title, setTitle] = useState('')
@@ -172,68 +47,110 @@ export function AddMemorySheet({ open, onOpenChange }: AddMemorySheetProps) {
   // Link tab state
   const [url, setUrl] = useState('')
   const [linkTitle, setLinkTitle] = useState('')
-  const [linkNotes, setLinkNotes] = useState('')
   const [isFetchingTitle, setIsFetchingTitle] = useState(false)
 
   // Image tab state
-  const [imageFile, setImageFile] = useState<File | null>(null)
-  const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null)
-  const [imageTitle, setImageTitle] = useState('')
-  const [isDragging, setIsDragging] = useState(false)
-  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [imagePrompt, setImagePrompt] = useState('')
+  const [imageUrl, setImageUrl] = useState('')        // user-pasted URL
+  const [generatedImage, setGeneratedImage] = useState<string | null>(null) // data URL from AI
+  const [isGeneratingImage, setIsGeneratingImage] = useState(false)
 
   // Voice tab state
-  const [voiceTitle, setVoiceTitle] = useState('')
-  const [recordedBlob, setRecordedBlob] = useState<Blob | null>(null)
-  const [isPlaying, setIsPlaying] = useState(false)
-  const audioRef = useRef<HTMLAudioElement | null>(null)
+  const [isRecording, setIsRecording] = useState(false)
+  const [recordingTime, setRecordingTime] = useState(0)
+  const [audioBlob, setAudioBlob] = useState<Blob | null>(null)
+  const [audioUrl, setAudioUrl] = useState<string | null>(null)
+  const [isTranscribing, setIsTranscribing] = useState(false)
+  const [transcript, setTranscript] = useState('')
 
   // Common state
   const [activeTab, setActiveTab] = useState('text')
-  const [showSuccess, setShowSuccess] = useState(false)
+  const [isSaving, setIsSaving] = useState(false)
 
-  // ── Cleanup image preview URL ──────────────────────────────────────
+  // Recording refs
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const streamRef = useRef<MediaStream | null>(null)
+  const audioContextRef = useRef<AudioContext | null>(null)
+  const processorRef = useRef<ScriptProcessorNode | null>(null)
+  const chunksRef = useRef<Blob[]>([])
+  const recordedChunksRef = useRef<Float32Array[]>([])
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // ── Encode Float32 PCM samples into a WAV Blob ──────────────────────
+  const encodeWav = useCallback((samples: Float32Array, sampleRate: number): Blob => {
+    const buffer = new ArrayBuffer(44 + samples.length * 2)
+    const view = new DataView(buffer)
+
+    // RIFF header
+    const writeString = (offset: number, str: string) => {
+      for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i))
+    }
+    writeString(0, 'RIFF')
+    view.setUint32(4, 36 + samples.length * 2, true)
+    writeString(8, 'WAVE')
+    writeString(12, 'fmt ')
+    view.setUint32(16, 16, true)           // subchunk size
+    view.setUint16(20, 1, true)            // audio format = PCM
+    view.setUint16(22, 1, true)            // mono
+    view.setUint32(24, sampleRate, true)
+    view.setUint32(28, sampleRate * 2, true) // byte rate
+    view.setUint16(32, 2, true)            // block align
+    view.setUint16(34, 16, true)           // bits per sample
+    writeString(36, 'data')
+    view.setUint32(40, samples.length * 2, true)
+
+    // PCM samples (float32 → int16)
+    let offset = 44
+    for (let i = 0; i < samples.length; i++) {
+      const s = Math.max(-1, Math.min(1, samples[i]))
+      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true)
+      offset += 2
+    }
+
+    return new Blob([view], { type: 'audio/wav' })
+  }, [])
+
+  // ── Cleanup on unmount ───────────────────────────────────────────────
   useEffect(() => {
     return () => {
-      if (imagePreviewUrl) URL.revokeObjectURL(imagePreviewUrl)
+      if (timerRef.current) clearInterval(timerRef.current)
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(t => t.stop())
+      }
+      if (audioContextRef.current) {
+        audioContextRef.current.close().catch(() => {})
+      }
+      if (audioUrl) URL.revokeObjectURL(audioUrl)
     }
-  }, [imagePreviewUrl])
+  }, [audioUrl])
 
-  // ── Format recording duration ──────────────────────────────────────
-  const formatDuration = (seconds: number) => {
-    const m = Math.floor(seconds / 60)
-    const s = seconds % 60
-    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
-  }
-
-  // ── Reset form ─────────────────────────────────────────────────────
   const resetForm = useCallback(() => {
     setTitle('')
     setContent('')
     setUrl('')
     setLinkTitle('')
-    setLinkNotes('')
-    setImageFile(null)
-    if (imagePreviewUrl) URL.revokeObjectURL(imagePreviewUrl)
-    setImagePreviewUrl(null)
-    setImageTitle('')
-    setVoiceTitle('')
-    setRecordedBlob(null)
-    setIsPlaying(false)
+    setImagePrompt('')
+    setImageUrl('')
+    setGeneratedImage(null)
+    setAudioBlob(null)
+    if (audioUrl) URL.revokeObjectURL(audioUrl)
+    setAudioUrl(null)
+    setTranscript('')
+    setRecordingTime(0)
     setActiveTab('text')
-    setShowSuccess(false)
-    if (audioRef.current) {
-      audioRef.current.pause()
-      audioRef.current = null
-    }
-  }, [imagePreviewUrl])
+    setIsSaving(false)
+    setIsFetchingTitle(false)
+    setIsGeneratingImage(false)
+    setIsTranscribing(false)
+    setIsRecording(false)
+  }, [audioUrl])
 
   const handleClose = useCallback(() => {
     onOpenChange(false)
     setTimeout(resetForm, 300)
   }, [onOpenChange, resetForm])
 
-  // ── Fetch link title ───────────────────────────────────────────────
+  // ── Fetch link title ─────────────────────────────────────────────────
   const fetchLinkTitle = useCallback(async () => {
     if (!url.trim()) return
     setIsFetchingTitle(true)
@@ -245,120 +162,158 @@ export function AddMemorySheet({ open, onOpenChange }: AddMemorySheetProps) {
       })
       if (res.ok) {
         const data = await res.json()
-        if (data.title) {
-          setLinkTitle(data.title)
-        }
+        if (data.title) setLinkTitle(data.title)
       }
     } catch {
-      // Silently fail
+      // silent
     } finally {
       setIsFetchingTitle(false)
     }
   }, [url])
 
-  // ── Image file selection ───────────────────────────────────────────
-  const handleImageSelect = useCallback((file: File) => {
-    if (!file.type.startsWith('image/')) {
-      toast.error('Only image files are accepted')
-      return
-    }
-    if (file.size > 10 * 1024 * 1024) {
-      toast.error('Image must be under 10MB')
-      return
-    }
-    if (imagePreviewUrl) URL.revokeObjectURL(imagePreviewUrl)
-    const url = URL.createObjectURL(file)
-    setImageFile(file)
-    setImagePreviewUrl(url)
-  }, [imagePreviewUrl])
-
-  const handleFileInput = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (file) handleImageSelect(file)
-  }, [handleImageSelect])
-
-  const removeImage = useCallback(() => {
-    if (imagePreviewUrl) URL.revokeObjectURL(imagePreviewUrl)
-    setImageFile(null)
-    setImagePreviewUrl(null)
-    if (fileInputRef.current) fileInputRef.current.value = ''
-  }, [imagePreviewUrl])
-
-  // ── Drag and drop handlers ─────────────────────────────────────────
-  const handleDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault()
-    setIsDragging(true)
-  }, [])
-
-  const handleDragLeave = useCallback((e: React.DragEvent) => {
-    e.preventDefault()
-    setIsDragging(false)
-  }, [])
-
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault()
-    setIsDragging(false)
-    const file = e.dataTransfer.files[0]
-    if (file) handleImageSelect(file)
-  }, [handleImageSelect])
-
-  // ── Voice recording ────────────────────────────────────────────────
-  const handleStartRecording = useCallback(async () => {
-    if (!isAuthenticated) {
-      setShowAuthModal(true)
-      toast.error('Sign in to capture memories')
-      return
-    }
+  // ── Generate image via AI ────────────────────────────────────────────
+  const generateImage = useCallback(async () => {
+    if (!imagePrompt.trim()) return
+    setIsGeneratingImage(true)
     try {
-      setRecordedBlob(null)
-      setIsPlaying(false)
-      if (audioRef.current) {
-        audioRef.current.pause()
-        audioRef.current = null
+      const res = await fetch('/api/ai/image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: imagePrompt.trim(), size: '1024x1024' }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        throw new Error(err.error || `Failed (${res.status})`)
       }
-      await startRecording()
-    } catch {
-      toast.error('Could not start recording')
+      const data = await res.json()
+      if (data.url) {
+        setGeneratedImage(data.url)
+        toast.success('Image generated!')
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Image generation failed')
+    } finally {
+      setIsGeneratingImage(false)
     }
-  }, [isAuthenticated, setShowAuthModal, startRecording])
+  }, [imagePrompt])
 
-  const handleStopRecording = useCallback(async () => {
-    const blob = await stopRecording()
-    if (blob) {
-      setRecordedBlob(blob)
+  // ── Voice recording (WAV via Web Audio API) ─────────────────────────
+  const startRecording = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+      streamRef.current = stream
+      recordedChunksRef.current = []
+
+      // Use AudioContext to capture raw PCM samples for WAV encoding
+      const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
+      const audioContext = new AudioCtx()
+      audioContextRef.current = audioContext
+
+      const source = audioContext.createMediaStreamSource(stream)
+      // 4096 sample buffer, 1 in/out channel
+      const processor = audioContext.createScriptProcessor(4096, 1, 1)
+      processorRef.current = processor
+
+      processor.onaudioprocess = (e) => {
+        const input = e.inputBuffer.getChannelData(0)
+        // Clone the data (it gets reused)
+        recordedChunksRef.current.push(new Float32Array(input))
+      }
+
+      source.connect(processor)
+      processor.connect(audioContext.destination)
+
+      setIsRecording(true)
+      setRecordingTime(0)
+      timerRef.current = setInterval(() => {
+        setRecordingTime(t => t + 1)
+      }, 1000)
+    } catch (e) {
+      toast.error('Microphone access denied or unavailable')
     }
-  }, [stopRecording])
-
-  // ── Voice playback ─────────────────────────────────────────────────
-  const togglePlayback = useCallback(() => {
-    if (!recordedBlob) return
-
-    if (isPlaying && audioRef.current) {
-      audioRef.current.pause()
-      audioRef.current.currentTime = 0
-      setIsPlaying(false)
-      return
-    }
-
-    const audioUrl = URL.createObjectURL(recordedBlob)
-    const audio = new Audio(audioUrl)
-    audio.onended = () => {
-      setIsPlaying(false)
-      URL.revokeObjectURL(audioUrl)
-    }
-    audio.play()
-    audioRef.current = audio
-    setIsPlaying(true)
-  }, [recordedBlob, isPlaying])
-
-  // ── Save handlers ──────────────────────────────────────────────────
-  const showSuccessAnimation = useCallback(() => {
-    setShowSuccess(true)
-    setTimeout(() => setShowSuccess(false), 2000)
   }, [])
 
+  const stopRecording = useCallback(() => {
+    // Capture sample rate BEFORE closing the context
+    const sampleRate = audioContextRef.current?.sampleRate || 48000
+
+    // Stop the processor and disconnect
+    if (processorRef.current) {
+      processorRef.current.disconnect()
+      processorRef.current = null
+    }
+    if (audioContextRef.current) {
+      audioContextRef.current.close().catch(() => {})
+      audioContextRef.current = null
+    }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(t => t.stop())
+    }
+
+    // Combine all recorded chunks into one Float32Array
+    const chunks = recordedChunksRef.current
+    if (chunks.length > 0) {
+      const totalLength = chunks.reduce((sum, c) => sum + c.length, 0)
+      const combined = new Float32Array(totalLength)
+      let offset = 0
+      for (const chunk of chunks) {
+        combined.set(chunk, offset)
+        offset += chunk.length
+      }
+
+      // Encode as WAV using the AudioContext's actual sample rate (typically 48000)
+      // The ASR API accepts any sample rate >= 16kHz
+      const wavBlob = encodeWav(combined, sampleRate)
+      setAudioBlob(wavBlob)
+      if (audioUrl) URL.revokeObjectURL(audioUrl)
+      setAudioUrl(URL.createObjectURL(wavBlob))
+    }
+
+    setIsRecording(false)
+    if (timerRef.current) {
+      clearInterval(timerRef.current)
+      timerRef.current = null
+    }
+  }, [audioUrl, encodeWav])
+
+  // ── Transcribe audio via ASR ─────────────────────────────────────────
+  const transcribeAudio = useCallback(async () => {
+    if (!audioBlob) return
+    setIsTranscribing(true)
+    try {
+      // Convert blob to base64
+      const reader = new FileReader()
+      reader.onloadend = async () => {
+        const base64 = reader.result as string
+        try {
+          const res = await fetch('/api/ai/asr', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ audio: base64 }),
+          })
+          if (!res.ok) throw new Error(`Failed (${res.status})`)
+          const data = await res.json()
+          if (data.text) {
+            setTranscript(data.text)
+            toast.success('Transcribed!')
+          } else {
+            toast.error('No speech detected')
+          }
+        } catch (e) {
+          toast.error(e instanceof Error ? e.message : 'Transcription failed')
+        } finally {
+          setIsTranscribing(false)
+        }
+      }
+      reader.readAsDataURL(audioBlob)
+    } catch (e) {
+      toast.error('Failed to read audio')
+      setIsTranscribing(false)
+    }
+  }, [audioBlob])
+
+  // ── Save handler ─────────────────────────────────────────────────────
   const handleSave = useCallback(async () => {
-    // Free plan paywall
     if (memories.length >= FREE_MEMORY_LIMIT) {
       toast.error('Free limit reached — upgrade to Pro for unlimited memories', {
         icon: <Crown className="size-4" />,
@@ -366,432 +321,426 @@ export function AddMemorySheet({ open, onOpenChange }: AddMemorySheetProps) {
       return
     }
 
-    // Auth gate
+    const type = activeTab as MemoryType
+    let memoryTitle = ''
+    let memoryContent = ''
+    let sourceUrl: string | null = null
+    let imagePreview: string | null = null
+    let fileUrl: string | null = null
+
+    if (type === 'text') {
+      memoryTitle = title.trim() || 'Untitled Note'
+      memoryContent = content.trim()
+      if (!memoryContent) return
+    } else if (type === 'link') {
+      memoryTitle = linkTitle.trim() || url.trim() || 'Untitled Link'
+      memoryContent = content.trim() || url.trim()
+      sourceUrl = url.trim()
+      if (!sourceUrl) return
+    } else if (type === 'image') {
+      // Prefer generated image, fall back to URL
+      const finalImage = generatedImage || (imageUrl.trim() ? imageUrl.trim() : null)
+      if (!finalImage) {
+        toast.error('Generate an image or paste an image URL first')
+        return
+      }
+      memoryTitle = title.trim() || imagePrompt.trim().slice(0, 60) || 'Untitled Image'
+      memoryContent = content.trim() || imagePrompt.trim()
+      imagePreview = finalImage
+      fileUrl = finalImage.startsWith('data:') ? null : finalImage
+    } else if (type === 'voice') {
+      memoryTitle = title.trim() || 'Voice Note'
+      memoryContent = transcript.trim() || content.trim()
+      if (!memoryContent) {
+        toast.error('Record and transcribe audio, or type notes')
+        return
+      }
+      if (audioUrl) fileUrl = audioUrl
+    }
+
+    // Gate: if not authenticated, show auth modal and queue this save
     if (!isAuthenticated) {
-      requireAuth(() => {
-        // After auth, the user can try saving again
-        setShowAuthModal(true)
+      const savedType = type
+      const savedTitle = memoryTitle
+      const savedContent = memoryContent
+      const savedSourceUrl = sourceUrl
+      const savedImagePreview = imagePreview
+      const savedFileUrl = fileUrl
+
+      requireAuth(async () => {
+        const result = await saveMemory({
+          type: savedType,
+          title: savedTitle,
+          content: savedContent,
+          sourceUrl: savedSourceUrl,
+          imagePreview: savedImagePreview,
+          fileUrl: savedFileUrl,
+        })
+        if (result) toast.success('Memory saved!')
       })
       handleClose()
       return
     }
 
-    if (activeTab === 'text') {
-      if (!content.trim()) return
-      const result = await captureText(title.trim() || 'Untitled Note', content.trim())
-      if (result.success) {
-        showSuccessAnimation()
-        setTimeout(handleClose, 1200)
-        toast.success('Memory captured')
+    // Authenticated: save directly
+    setIsSaving(true)
+    try {
+      const result = await saveMemory({
+        type,
+        title: memoryTitle,
+        content: memoryContent,
+        sourceUrl,
+        imagePreview,
+        fileUrl,
+      })
+      if (result) {
+        handleClose()
+        toast.success('Memory saved!')
       } else {
-        toast.error(result.error || 'Failed to save')
+        toast.error('Failed to save memory')
       }
-    } else if (activeTab === 'link') {
-      if (!url.trim()) return
-      const result = await captureLink(url.trim(), linkTitle.trim() || undefined, linkNotes.trim() || undefined)
-      if (result.success) {
-        showSuccessAnimation()
-        setTimeout(handleClose, 1200)
-        toast.success('Link captured')
-      } else {
-        toast.error(result.error || 'Failed to save')
-      }
-    } else if (activeTab === 'image') {
-      if (!imageFile) {
-        toast.error('Please select an image')
-        return
-      }
-      const result = await captureImage(imageFile, imageTitle.trim() || undefined)
-      if (result.success) {
-        showSuccessAnimation()
-        setTimeout(handleClose, 1200)
-        toast.success('Image captured')
-      } else {
-        toast.error(result.error || 'Failed to save')
-      }
-    } else if (activeTab === 'voice') {
-      if (!recordedBlob) {
-        toast.error('Please record audio first')
-        return
-      }
-      const result = await captureVoice(recordedBlob, voiceTitle.trim() || undefined)
-      if (result.success) {
-        showSuccessAnimation()
-        setTimeout(handleClose, 1200)
-        toast.success('Voice note captured')
-      } else {
-        toast.error(result.error || 'Failed to save')
-      }
+    } catch {
+      toast.error('Something went wrong')
+    } finally {
+      setIsSaving(false)
     }
-  }, [
-    activeTab, title, content, url, linkTitle, linkNotes,
-    imageFile, imageTitle, recordedBlob, voiceTitle,
-    isAuthenticated, memories.length, requireAuth, handleClose,
-    captureText, captureLink, captureImage, captureVoice,
-    showSuccessAnimation,
-  ])
+  }, [activeTab, title, content, linkTitle, url, imageUrl, generatedImage, imagePrompt, transcript, audioUrl, isAuthenticated, requireAuth, saveMemory, handleClose, memories.length, FREE_MEMORY_LIMIT])
 
-  // ── Determine if save is disabled ──────────────────────────────────
   const isSaveDisabled = () => {
-    if (isCapturing || isRecording) return true
+    if (isSaving) return true
     if (activeTab === 'text') return !content.trim()
     if (activeTab === 'link') return !url.trim()
-    if (activeTab === 'image') return !imageFile
-    if (activeTab === 'voice') return !recordedBlob
+    if (activeTab === 'image') return !generatedImage && !imageUrl.trim()
+    if (activeTab === 'voice') return !transcript.trim() && !content.trim()
     return false
   }
 
-  // ═════════════════════════════════════════════════════════════════
-  // ─── TAB CONTENT ──────────────────────────────────────────────────
-  // ═════════════════════════════════════════════════════════════════
+  const formatTime = (s: number) => `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, '0')}`
 
-  const tabContent = (
-    <div className="relative">
-      <SuccessOverlay show={showSuccess} />
-
+  const sheetContent = (
+    <>
       <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList className="w-full grid grid-cols-4 bg-white/50 dark:bg-white/5 backdrop-blur-sm border border-white/20">
-          <TabsTrigger value="text" className="gap-1.5 data-[state=active]:bg-primary/10 data-[state=active]:text-primary transition-all">
+        <TabsList className="w-full grid grid-cols-4">
+          <TabsTrigger value="text" className="gap-1.5">
             <FileText className="size-4" />
             <span className="hidden sm:inline">Text</span>
           </TabsTrigger>
-          <TabsTrigger value="link" className="gap-1.5 data-[state=active]:bg-primary/10 data-[state=active]:text-primary transition-all">
+          <TabsTrigger value="link" className="gap-1.5">
             <Link2 className="size-4" />
             <span className="hidden sm:inline">Link</span>
           </TabsTrigger>
-          <TabsTrigger value="image" className="gap-1.5 data-[state=active]:bg-primary/10 data-[state=active]:text-primary transition-all">
+          <TabsTrigger value="image" className="gap-1.5">
             <ImageIcon className="size-4" />
             <span className="hidden sm:inline">Image</span>
           </TabsTrigger>
-          <TabsTrigger value="voice" className="gap-1.5 data-[state=active]:bg-primary/10 data-[state=active]:text-primary transition-all">
+          <TabsTrigger value="voice" className="gap-1.5">
             <Mic className="size-4" />
             <span className="hidden sm:inline">Voice</span>
           </TabsTrigger>
         </TabsList>
 
-        {/* ── Text Tab ─────────────────────────────────────────────── */}
+        {/* Text Tab */}
         <TabsContent value="text" className="space-y-4 pt-4">
-          <motion.div
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.25 }}
-            className="space-y-4"
-          >
-            <div className="space-y-2">
-              <Label htmlFor="memory-title" className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Title</Label>
-              <Input
-                id="memory-title"
-                placeholder="Give your memory a title..."
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                className="bg-white/50 dark:bg-white/5 backdrop-blur-sm border-white/20 focus:border-primary/40 transition-colors"
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="memory-content" className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Content</Label>
-              <Textarea
-                id="memory-content"
-                placeholder="Write your thoughts, notes, ideas..."
-                value={content}
-                onChange={(e) => setContent(e.target.value)}
-                className="min-h-[160px] resize-y bg-white/50 dark:bg-white/5 backdrop-blur-sm border-white/20 focus:border-primary/40 transition-colors"
-              />
-            </div>
-          </motion.div>
+          <div className="space-y-2">
+            <Label htmlFor="memory-title">Title</Label>
+            <Input
+              id="memory-title"
+              placeholder="Give your memory a title..."
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="memory-content">Content</Label>
+            <Textarea
+              id="memory-content"
+              placeholder="Write your thoughts, notes, ideas..."
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              className="min-h-[160px] resize-y"
+            />
+          </div>
         </TabsContent>
 
-        {/* ── Link Tab ─────────────────────────────────────────────── */}
+        {/* Link Tab */}
         <TabsContent value="link" className="space-y-4 pt-4">
-          <motion.div
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.25 }}
-            className="space-y-4"
-          >
-            <div className="space-y-2">
-              <Label htmlFor="link-url" className="text-xs font-medium text-muted-foreground uppercase tracking-wide">URL</Label>
-              <div className="flex gap-2">
-                <Input
-                  id="link-url"
-                  placeholder="https://..."
-                  value={url}
-                  onChange={(e) => setUrl(e.target.value)}
-                  onBlur={() => fetchLinkTitle()}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') fetchLinkTitle()
-                  }}
-                  className="bg-white/50 dark:bg-white/5 backdrop-blur-sm border-white/20 focus:border-primary/40 transition-colors"
-                />
-                <Button
-                  variant="outline"
-                  size="icon"
-                  onClick={fetchLinkTitle}
-                  disabled={isFetchingTitle || !url.trim()}
-                  className="shrink-0 bg-white/50 dark:bg-white/5 backdrop-blur-sm border-white/20 hover:bg-primary/10 hover:border-primary/30 transition-colors"
-                >
-                  {isFetchingTitle ? (
-                    <Loader2 className="size-4 animate-spin" />
-                  ) : (
-                    <Link2 className="size-4" />
-                  )}
-                </Button>
-              </div>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="link-title" className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Title</Label>
+          <div className="space-y-2">
+            <Label htmlFor="link-url">URL</Label>
+            <div className="flex gap-2">
               <Input
-                id="link-title"
-                placeholder="Link title (auto-fetched or type manually)"
-                value={linkTitle}
-                onChange={(e) => setLinkTitle(e.target.value)}
-                className="bg-white/50 dark:bg-white/5 backdrop-blur-sm border-white/20 focus:border-primary/40 transition-colors"
+                id="link-url"
+                placeholder="https://..."
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                onBlur={() => fetchLinkTitle()}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') fetchLinkTitle()
+                }}
               />
+              <Button
+                variant="outline"
+                size="icon"
+                onClick={fetchLinkTitle}
+                disabled={isFetchingTitle || !url.trim()}
+              >
+                {isFetchingTitle ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <Link2 className="size-4" />
+                )}
+              </Button>
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="link-notes" className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Notes</Label>
-              <Textarea
-                id="link-notes"
-                placeholder="Add notes about this link..."
-                value={linkNotes}
-                onChange={(e) => setLinkNotes(e.target.value)}
-                className="min-h-[100px] resize-y bg-white/50 dark:bg-white/5 backdrop-blur-sm border-white/20 focus:border-primary/40 transition-colors"
-              />
-            </div>
-          </motion.div>
+            <p className="text-xs text-muted-foreground">
+              We&apos;ll auto-read the page content and tag it for you after saving.
+            </p>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="link-title">Title</Label>
+            <Input
+              id="link-title"
+              placeholder="Link title (auto-fetched or type manually)"
+              value={linkTitle}
+              onChange={(e) => setLinkTitle(e.target.value)}
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="link-notes">Notes</Label>
+            <Textarea
+              id="link-notes"
+              placeholder="Add notes about this link..."
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              className="min-h-[100px] resize-y"
+            />
+          </div>
         </TabsContent>
 
-        {/* ── Image Tab ────────────────────────────────────────────── */}
+        {/* Image Tab — AI generation + URL paste */}
         <TabsContent value="image" className="space-y-4 pt-4">
-          <motion.div
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.25 }}
-            className="space-y-4"
-          >
-            <div className="space-y-2">
-              <Label htmlFor="image-title" className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Title</Label>
-              <Input
-                id="image-title"
-                placeholder="Image title..."
-                value={imageTitle}
-                onChange={(e) => setImageTitle(e.target.value)}
-                className="bg-white/50 dark:bg-white/5 backdrop-blur-sm border-white/20 focus:border-primary/40 transition-colors"
-              />
-            </div>
+          <div className="space-y-2">
+            <Label htmlFor="image-title">Title</Label>
+            <Input
+              id="image-title"
+              placeholder="Image title..."
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+            />
+          </div>
 
-            {!imagePreviewUrl ? (
-              <div
-                onDragOver={handleDragOver}
-                onDragLeave={handleDragLeave}
-                onDrop={handleDrop}
-                onClick={() => fileInputRef.current?.click()}
-                className={cn(
-                  'relative flex flex-col items-center justify-center rounded-xl border-2 border-dashed p-8 text-center cursor-pointer transition-all duration-300',
-                  'bg-white/30 dark:bg-white/5 backdrop-blur-sm',
-                  isDragging
-                    ? 'border-primary/60 bg-primary/5 scale-[1.02]'
-                    : 'border-white/30 hover:border-primary/40 hover:bg-primary/5',
+          <div className="space-y-2">
+            <Label htmlFor="image-prompt">
+              <Sparkles className="size-3 inline mr-1" />
+              Generate image with AI
+            </Label>
+            <div className="flex gap-2">
+              <Input
+                id="image-prompt"
+                placeholder="A serene mountain landscape at sunset..."
+                value={imagePrompt}
+                onChange={(e) => setImagePrompt(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !isGeneratingImage) generateImage()
+                }}
+              />
+              <Button
+                variant="outline"
+                onClick={generateImage}
+                disabled={isGeneratingImage || !imagePrompt.trim()}
+              >
+                {isGeneratingImage ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <Sparkles className="size-4" />
                 )}
+                <span className="ml-1 hidden sm:inline">Generate</span>
+              </Button>
+            </div>
+          </div>
+
+          {/* Image preview */}
+          {generatedImage && (
+            <div className="relative rounded-lg overflow-hidden border">
+              <img src={generatedImage} alt="Generated" className="w-full h-auto" />
+              <Button
+                size="icon"
+                variant="secondary"
+                className="absolute top-2 right-2 size-7"
+                onClick={() => setGeneratedImage(null)}
               >
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/*"
-                  className="hidden"
-                  onChange={handleFileInput}
-                />
-                <motion.div
-                  animate={isDragging ? { scale: 1.1, y: -4 } : { scale: 1, y: 0 }}
-                  transition={{ type: 'spring', stiffness: 300, damping: 25 }}
-                >
-                  <Upload className="size-10 text-muted-foreground/60 mb-3" />
-                </motion.div>
-                <p className="text-sm font-medium text-muted-foreground">
-                  {isDragging ? 'Drop your image here' : 'Drop an image or click to upload'}
-                </p>
-                <p className="text-xs text-muted-foreground/60 mt-1">
-                  PNG, JPG, GIF, WebP — up to 10MB
-                </p>
+                ×
+              </Button>
+            </div>
+          )}
+
+          {/* OR divider */}
+          <div className="flex items-center gap-2 py-1">
+            <div className="h-px bg-border flex-1" />
+            <span className="text-xs text-muted-foreground">OR paste image URL</span>
+            <div className="h-px bg-border flex-1" />
+          </div>
+
+          <div className="space-y-2">
+            <Input
+              placeholder="https://example.com/image.jpg"
+              value={imageUrl}
+              onChange={(e) => setImageUrl(e.target.value)}
+            />
+            {imageUrl.trim() && !generatedImage && (
+              <div className="relative rounded-lg overflow-hidden border">
+                <img src={imageUrl.trim()} alt="Preview" className="w-full h-auto" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }} />
               </div>
-            ) : (
-              <motion.div
-                initial={{ opacity: 0, scale: 0.95 }}
-                animate={{ opacity: 1, scale: 1 }}
-                className="relative group"
+            )}
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="image-notes">Notes</Label>
+            <Textarea
+              id="image-notes"
+              placeholder="Add notes about this image..."
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              className="min-h-[80px] resize-y"
+            />
+          </div>
+        </TabsContent>
+
+        {/* Voice Tab — Recording + ASR */}
+        <TabsContent value="voice" className="space-y-4 pt-4">
+          <div className="space-y-2">
+            <Label htmlFor="voice-title">Title</Label>
+            <Input
+              id="voice-title"
+              placeholder="Voice note title..."
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+            />
+          </div>
+
+          {/* Recording controls */}
+          <div className="flex flex-col items-center justify-center rounded-lg border-2 border-dashed border-border p-6 text-center gap-3">
+            {!isRecording ? (
+              <Button
+                onClick={startRecording}
+                className="gap-2 bg-gradient-to-r from-rose-500 to-pink-600 hover:opacity-90"
+                size="lg"
               >
-                <div className="rounded-xl overflow-hidden border border-white/20 shadow-[0_20px_50px_rgba(109,89,122,0.08)]">
-                  <img
-                    src={imagePreviewUrl}
-                    alt="Preview"
-                    className="w-full h-auto max-h-[280px] object-cover"
-                  />
+                <Mic className="size-5" />
+                Start Recording
+              </Button>
+            ) : (
+              <div className="flex flex-col items-center gap-3">
+                <div className="flex items-center gap-2 text-rose-500">
+                  <span className="size-3 rounded-full bg-rose-500 animate-pulse" />
+                  Recording... {formatTime(recordingTime)}
                 </div>
                 <Button
+                  onClick={stopRecording}
                   variant="destructive"
-                  size="icon"
-                  className="absolute top-2 right-2 size-8 opacity-0 group-hover:opacity-100 transition-opacity bg-black/50 hover:bg-black/70 backdrop-blur-sm border-0"
-                  onClick={removeImage}
+                  size="lg"
+                  className="gap-2"
                 >
-                  <X className="size-4" />
+                  <Square className="size-5" />
+                  Stop
                 </Button>
-              </motion.div>
+              </div>
             )}
-          </motion.div>
-        </TabsContent>
+          </div>
 
-        {/* ── Voice Tab ────────────────────────────────────────────── */}
-        <TabsContent value="voice" className="space-y-4 pt-4">
-          <motion.div
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.25 }}
-            className="space-y-4"
-          >
+          {/* Audio playback + transcribe */}
+          {audioUrl && !isRecording && (
+            <div className="space-y-3">
+              <audio src={audioUrl} controls className="w-full" />
+              <div className="flex gap-2">
+                <Button
+                  onClick={transcribeAudio}
+                  disabled={isTranscribing}
+                  variant="outline"
+                  className="gap-2 flex-1"
+                >
+                  {isTranscribing ? (
+                    <>
+                      <Loader2 className="size-4 animate-spin" />
+                      Transcribing...
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="size-4" />
+                      Transcribe with AI
+                    </>
+                  )}
+                </Button>
+                <Button
+                  onClick={startRecording}
+                  variant="ghost"
+                  className="gap-2"
+                >
+                  <Mic className="size-4" />
+                  Re-record
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {/* Transcript */}
+          {transcript && (
             <div className="space-y-2">
-              <Label htmlFor="voice-title" className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Title</Label>
-              <Input
-                id="voice-title"
-                placeholder="Voice note title..."
-                value={voiceTitle}
-                onChange={(e) => setVoiceTitle(e.target.value)}
-                className="bg-white/50 dark:bg-white/5 backdrop-blur-sm border-white/20 focus:border-primary/40 transition-colors"
+              <Label htmlFor="voice-transcript">Transcript (editable)</Label>
+              <Textarea
+                id="voice-transcript"
+                value={transcript}
+                onChange={(e) => setTranscript(e.target.value)}
+                className="min-h-[100px] resize-y"
               />
             </div>
+          )}
 
-            <div className="rounded-xl border border-white/20 bg-white/30 dark:bg-white/5 backdrop-blur-xl p-6 shadow-[0_20px_50px_rgba(109,89,122,0.05)]">
-              {/* Waveform visualization */}
-              <WaveformBars isActive={isRecording} />
-
-              {/* Timer */}
-              <div className="text-center mt-3">
-                <motion.span
-                  className={cn(
-                    'text-2xl font-mono font-light tracking-widest',
-                    isRecording ? 'text-red-500' : 'text-muted-foreground'
-                  )}
-                  animate={isRecording ? { opacity: [1, 0.5, 1] } : { opacity: 1 }}
-                  transition={{ duration: 1.5, repeat: Infinity }}
-                >
-                  {formatDuration(recordingDuration)}
-                </motion.span>
-              </div>
-
-              {/* Controls */}
-              <div className="flex items-center justify-center gap-4 mt-5">
-                {!isRecording ? (
-                  <motion.div whileTap={{ scale: 0.92 }}>
-                    <Button
-                      onClick={handleStartRecording}
-                      size="lg"
-                      className={cn(
-                        'rounded-full size-14 p-0 shadow-lg transition-all',
-                        'bg-gradient-to-br from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white',
-                        'shadow-red-500/20 hover:shadow-red-500/30'
-                      )}
-                    >
-                      <Mic className="size-6" />
-                    </Button>
-                  </motion.div>
-                ) : (
-                  <motion.div whileTap={{ scale: 0.92 }}>
-                    <Button
-                      onClick={handleStopRecording}
-                      size="lg"
-                      className="rounded-full size-14 p-0 shadow-lg bg-red-500 hover:bg-red-600 text-white shadow-red-500/20"
-                    >
-                      <Square className="size-5" />
-                    </Button>
-                  </motion.div>
-                )}
-
-                {/* Playback button */}
-                {recordedBlob && !isRecording && (
-                  <motion.div
-                    initial={{ opacity: 0, scale: 0.8 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    whileTap={{ scale: 0.92 }}
-                  >
-                    <Button
-                      onClick={togglePlayback}
-                      variant="outline"
-                      size="lg"
-                      className="rounded-full size-12 p-0 bg-white/50 dark:bg-white/5 backdrop-blur-sm border-white/20 hover:bg-primary/10 hover:border-primary/30"
-                    >
-                      {isPlaying ? (
-                        <Square className="size-4" />
-                      ) : (
-                        <Play className="size-4 ml-0.5" />
-                      )}
-                    </Button>
-                  </motion.div>
-                )}
-              </div>
-
-              {/* Status text */}
-              <p className="text-center text-xs text-muted-foreground mt-3">
-                {isRecording
-                  ? 'Tap to stop recording'
-                  : recordedBlob
-                    ? 'Recording ready — listen back or save'
-                    : 'Tap the microphone to start recording'}
-              </p>
-            </div>
-          </motion.div>
+          <div className="space-y-2">
+            <Label htmlFor="voice-notes">Additional notes (optional)</Label>
+            <Textarea
+              id="voice-notes"
+              placeholder="Add any extra notes..."
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              className="min-h-[80px] resize-y"
+            />
+          </div>
         </TabsContent>
       </Tabs>
 
-      {/* ── Save Button ────────────────────────────────────────────── */}
-      <div className="pt-5 pb-2">
+      {/* Save Button */}
+      <div className="pt-4 pb-2">
         <Button
           onClick={handleSave}
           disabled={isSaveDisabled()}
-          className={cn(
-            'w-full relative overflow-hidden transition-all duration-300',
-            'bg-gradient-to-r from-primary to-[#8B6F9A] text-primary-foreground',
-            'hover:opacity-90 hover:shadow-lg hover:shadow-primary/20',
-            isCapturing && 'cursor-wait',
-          )}
+          className="w-full bg-gradient-to-r from-primary to-[#8B6F9A] text-primary-foreground hover:opacity-90"
         >
-          {isCapturing ? (
-            <motion.div
-              className="flex items-center gap-2"
-              initial={{ opacity: 0, y: 4 }}
-              animate={{ opacity: 1, y: 0 }}
-            >
+          {isSaving ? (
+            <>
               <Loader2 className="size-4 animate-spin" />
-              Saving & Synthesizing...
-            </motion.div>
+              Saving...
+            </>
           ) : (
-            <motion.span
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              className="flex items-center gap-2"
-            >
-              <Sparkles className="size-4" />
-              Save Memory
-            </motion.span>
+            'Save Memory'
           )}
         </Button>
       </div>
-    </div>
+    </>
   )
 
-  // ═════════════════════════════════════════════════════════════════
-  // ─── RESPONSIVE: SHEET (desktop) / DRAWER (mobile) ──────────────
-  // ═════════════════════════════════════════════════════════════════
-
+  // On mobile: use Drawer (slides up from bottom)
+  // On desktop: use Sheet (slides from right)
   if (isMobile) {
     return (
       <Drawer open={open} onOpenChange={onOpenChange}>
-        <DrawerContent className="bg-background/95 backdrop-blur-xl">
-          <DrawerHeader className="pb-2">
-            <DrawerTitle className="text-lg font-semibold">New Memory</DrawerTitle>
-            <DrawerDescription className="text-sm text-muted-foreground">
+        <DrawerContent>
+          <DrawerHeader>
+            <DrawerTitle>New Memory</DrawerTitle>
+            <DrawerDescription>
               Capture a thought, link, image, or voice note.
             </DrawerDescription>
           </DrawerHeader>
-          <div className="px-4 pb-4">
-            {tabContent}
+          <div className="px-4 pb-4 max-h-[80vh] overflow-y-auto">
+            {sheetContent}
           </div>
         </DrawerContent>
       </Drawer>
@@ -800,18 +749,15 @@ export function AddMemorySheet({ open, onOpenChange }: AddMemorySheetProps) {
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent
-        side="right"
-        className="sm:max-w-md overflow-y-auto bg-background/95 backdrop-blur-xl border-l border-white/10"
-      >
+      <SheetContent side="right" className="sm:max-w-md overflow-y-auto">
         <SheetHeader>
-          <SheetTitle className="text-lg font-semibold">New Memory</SheetTitle>
-          <SheetDescription className="text-sm text-muted-foreground">
+          <SheetTitle>New Memory</SheetTitle>
+          <SheetDescription>
             Capture a thought, link, image, or voice note.
           </SheetDescription>
         </SheetHeader>
         <div className="px-4 pb-4">
-          {tabContent}
+          {sheetContent}
         </div>
       </SheetContent>
     </Sheet>

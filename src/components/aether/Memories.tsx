@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useMemo, useCallback, useState, useEffect, useRef } from 'react'
+import React, { useMemo, useCallback, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { formatDistanceToNow } from 'date-fns'
 import {
@@ -182,6 +182,18 @@ function MemoryCard({
             {displayTitle}
           </p>
 
+          {/* Image preview (for image-type memories) */}
+          {memory.imagePreview && (
+            <div className="rounded-md overflow-hidden border border-border/50 max-h-32" onClick={onClick}>
+              <img
+                src={memory.imagePreview}
+                alt={displayTitle}
+                className="w-full h-32 object-cover"
+                loading="lazy"
+              />
+            </div>
+          )}
+
           {/* Content preview */}
           {memory.content && memory.title && (
             <p className="text-xs text-muted-foreground leading-relaxed line-clamp-2">
@@ -327,6 +339,22 @@ function MemoryDetail({
           {memory.title || 'Untitled'}
         </h2>
       </div>
+
+      {/* Image (for image-type memories) */}
+      {memory.imagePreview && (
+        <div className="rounded-xl overflow-hidden border border-border/50 shadow-sm">
+          <img
+            src={memory.imagePreview}
+            alt={memory.title || 'Image'}
+            className="w-full h-auto"
+          />
+        </div>
+      )}
+
+      {/* Audio playback (for voice-type memories) */}
+      {memory.fileUrl && memory.type === 'voice' && (
+        <audio src={memory.fileUrl} controls className="w-full" />
+      )}
 
       {/* Content */}
       <Card className={cn(
@@ -500,77 +528,9 @@ export function Memories() {
 
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
   const [isDeleting, setIsDeleting] = useState(false)
-  const [semanticResults, setSemanticResults] = useState<Memory[] | null>(null)
-  const [isSearching, setIsSearching] = useState(false)
-  const [searchMethod, setSearchMethod] = useState<string>('keyword')
-  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  // ── Semantic search: debounced API call ────────────────────────────
-  useEffect(() => {
-    if (!searchQuery.trim() || searchQuery.trim().length < 3) {
-      setSemanticResults(null)
-      setIsSearching(false)
-      setSearchMethod('keyword')
-      return
-    }
-
-    setIsSearching(true)
-
-    if (searchDebounceRef.current) {
-      clearTimeout(searchDebounceRef.current)
-    }
-
-    searchDebounceRef.current = setTimeout(async () => {
-      try {
-        const res = await fetch(`/api/search?q=${encodeURIComponent(searchQuery.trim())}&limit=20`)
-        if (res.ok) {
-          const data = await res.json()
-          if (data.results && data.results.length > 0) {
-            setSemanticResults(data.results as Memory[])
-            setSearchMethod(data.method || 'keyword')
-          } else {
-            setSemanticResults([])
-            setSearchMethod(data.method || 'keyword')
-          }
-        }
-      } catch {
-        // Fallback to client-side filtering (handled below)
-        setSemanticResults(null)
-        setSearchMethod('keyword')
-      } finally {
-        setIsSearching(false)
-      }
-    }, 400)
-
-    return () => {
-      if (searchDebounceRef.current) {
-        clearTimeout(searchDebounceRef.current)
-      }
-    }
-  }, [searchQuery])
 
   // ── Filtered memories ────────────────────────────────────────────
   const filteredMemories = useMemo(() => {
-    // If semantic search returned results, use those
-    if (semanticResults !== null && searchQuery.trim().length >= 3) {
-      let result = [...semanticResults]
-
-      // Filter by selected collection
-      if (selectedCollectionId) {
-        result = result.filter((m) =>
-          m.collections?.some((c) => c.id === selectedCollectionId)
-        )
-      }
-
-      // Filter by type
-      if (filterType !== 'all') {
-        result = result.filter((m) => m.type === filterType)
-      }
-
-      return result
-    }
-
-    // Fallback: client-side filtering
     let result = [...memories]
 
     // Filter by selected collection
@@ -585,7 +545,7 @@ export function Memories() {
       result = result.filter((m) => m.type === filterType)
     }
 
-    // Search filter (client-side when semantic results aren't available)
+    // Search filter
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase().trim()
       result = result.filter(
@@ -603,7 +563,7 @@ export function Memories() {
     )
 
     return result
-  }, [memories, semanticResults, searchQuery, filterType, selectedCollectionId])
+  }, [memories, searchQuery, filterType, selectedCollectionId])
 
   // ── Selected memory ──────────────────────────────────────────────
   const selectedMemory = useMemo(
@@ -737,37 +697,19 @@ export function Memories() {
                 <Input
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search memories — semantic AI search enabled..."
-                  className="h-10 pl-9 pr-20 text-sm bg-card border-0 shadow-sm
+                  placeholder="Search memories by title, content, or tags..."
+                  className="h-10 pl-9 pr-9 text-sm bg-card border-0 shadow-sm
                     focus-visible:ring-primary/30 focus-visible:border-primary/50"
                 />
-                <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1.5">
-                  {isSearching && (
-                    <Loader2 className="size-3.5 animate-spin text-muted-foreground" />
-                  )}
-                  {searchQuery && searchQuery.trim().length >= 3 && !isSearching && semanticResults !== null && (
-                    <span className={cn(
-                      "text-[10px] px-1.5 py-0.5 rounded-full font-medium",
-                      searchMethod === 'semantic'
-                        ? "bg-purple-100 text-purple-600"
-                        : "bg-gray-100 text-gray-500"
-                    )}>
-                      {searchMethod === 'semantic' ? 'AI' : 'keyword'}
-                    </span>
-                  )}
-                  {searchQuery && (
-                    <button
-                      onClick={() => {
-                        setSearchQuery('')
-                        setSemanticResults(null)
-                      }}
-                      className="size-5 rounded-full bg-muted flex items-center justify-center hover:bg-accent transition-colors"
-                      aria-label="Clear search"
-                    >
-                      <X className="size-3" />
-                    </button>
-                  )}
-                </div>
+                {searchQuery && (
+                  <button
+                    onClick={() => setSearchQuery('')}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 size-5 rounded-full bg-muted flex items-center justify-center hover:bg-accent transition-colors"
+                    aria-label="Clear search"
+                  >
+                    <X className="size-3" />
+                  </button>
+                )}
               </div>
             </motion.div>
 

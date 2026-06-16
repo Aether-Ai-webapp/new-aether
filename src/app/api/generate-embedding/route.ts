@@ -24,7 +24,7 @@ export async function POST(req: NextRequest) {
     }
 
     // ── 1. Generate embedding with Gemini text-embedding-004 ──────────
-    const geminiKey = process.env.GEMINI_API_KEY
+    const geminiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY
     if (!geminiKey) {
       return NextResponse.json(
         { error: 'Gemini API key not configured' },

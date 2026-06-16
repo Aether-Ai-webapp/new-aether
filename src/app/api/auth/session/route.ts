@@ -2,25 +2,11 @@ import { NextResponse } from 'next/server'
 
 // GET /api/auth/session - Get current auth session
 export async function GET() {
+  // If Supabase isn't configured, return unauthenticated immediately (silent)
+  if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
+    return NextResponse.json({ user: null, authenticated: false })
+  }
   try {
-    // Check if Supabase is configured
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-    const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-
-    if (!supabaseUrl || !supabaseKey || supabaseUrl === 'your_supabase_url_here') {
-      // Supabase not configured — return local user session
-      return NextResponse.json({
-        user: {
-          id: 'local',
-          email: '',
-          name: 'Aether User',
-          avatarUrl: null,
-        },
-        authenticated: true,
-      })
-    }
-
-    // Supabase is configured — check real session
     const { createClient } = await import('@/lib/supabase/server')
     const supabase = await createClient()
 
@@ -39,17 +25,7 @@ export async function GET() {
       },
       authenticated: true,
     })
-  } catch (error) {
-    console.error('Session error:', error)
-    // Even on error, return local user so the app doesn't break
-    return NextResponse.json({
-      user: {
-        id: 'local',
-        email: '',
-        name: 'Aether User',
-        avatarUrl: null,
-      },
-      authenticated: true,
-    })
+  } catch {
+    return NextResponse.json({ user: null, authenticated: false })
   }
 }

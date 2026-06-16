@@ -1,18 +1,23 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
+import { getGeminiEmbeddingModel, aiCache, CACHE_KEYS, CACHE_TTL, hashContent } from '@/lib/ai-cache'
 
 // ═══════════════════════════════════════════════════════════════════════
-// ─── SEMANTIC VECTOR SEARCH API ──────────────────────────────────────
+// ─── SEMANTIC VECTOR SEARCH API (OPTIMIZED) ──────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
 //
 // GET /api/search?q=<query>&limit=<n>
 //
 // Flow:
-// 1. Convert query to embedding vector via Gemini text-embedding-004
-// 2. If Supabase + pgvector: use match_memories RPC for cosine similarity
-// 3. If not: fall back to Prisma keyword search (TF-IDF lite)
+// 1. Check in-memory cache for recent identical queries (5-min TTL)
+// 2. Convert query to embedding vector via shared Gemini text-embedding-004
+// 3. If Supabase + pgvector: use match_memories RPC for cosine similarity
+// 4. If not: fall back to Prisma keyword search (weighted scoring, top 100)
 //
-// Returns conceptually relevant memories even if exact keywords don't match.
+// Performance wins vs. previous version:
+// - Shared Gemini client singleton (no per-request init / dynamic import)
+// - In-memory cache avoids redundant embedding + DB work for same query
+// - Keyword search reduced from 200 → 100 memories loaded into memory
 
 function isSupabaseConfigured(): boolean {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL
@@ -21,14 +26,8 @@ function isSupabaseConfigured(): boolean {
 }
 
 async function generateEmbedding(text: string): Promise<number[] | null> {
-  // Try Gemini text-embedding-004
-  const geminiKey = process.env.GEMINI_API_KEY
-  if (!geminiKey) return null
-
   try {
-    const { GoogleGenerativeAI } = await import('@google/generative-ai')
-    const genAI = new GoogleGenerativeAI(geminiKey)
-    const embeddingModel = genAI.getGenerativeModel('text-embedding-004')
+    const embeddingModel = getGeminiEmbeddingModel()
 
     const result = await embeddingModel.embedContent(text.slice(0, 2000))
     const values = result.embedding.values
@@ -50,7 +49,7 @@ async function keywordSearch(query: string, limit: number) {
 
   if (words.length === 0) return []
 
-  // Get all memories and score them locally
+  // Load top 100 most recent memories for scoring (reduced from 200 for speed)
   let allMemories
   try {
     allMemories = await db.memory.findMany({
@@ -76,7 +75,7 @@ async function keywordSearch(query: string, limit: number) {
           },
         },
       },
-      take: 200,
+      take: 100,
       orderBy: { createdAt: 'desc' },
     })
   } catch (prismaErr) {
@@ -139,6 +138,13 @@ export async function GET(req: NextRequest) {
 
     if (!query) {
       return NextResponse.json({ error: 'Query parameter "q" is required' }, { status: 400 })
+    }
+
+    // ── CACHE CHECK: Return cached results for identical recent queries ──
+    const cacheKey = CACHE_KEYS.SEARCH(hashContent(query))
+    const cached = aiCache.get<{ results: unknown[]; query: string; method: string; count: number }>(cacheKey)
+    if (cached) {
+      return NextResponse.json(cached)
     }
 
     // ── PATH A: Semantic Vector Search (Supabase + pgvector) ────────
@@ -232,12 +238,17 @@ export async function GET(req: NextRequest) {
                 // Sort by similarity descending
                 results.sort((a: { similarity: number }, b: { similarity: number }) => b.similarity - a.similarity)
 
-                return NextResponse.json({
+                const responseBody = {
                   results,
                   query,
                   method: 'semantic',
                   count: results.length,
-                })
+                }
+
+                // Cache the semantic search results
+                aiCache.set(cacheKey, responseBody, CACHE_TTL.SEARCH)
+
+                return NextResponse.json(responseBody)
               }
             }
           } catch (err) {
@@ -261,12 +272,17 @@ export async function GET(req: NextRequest) {
       )
     }
 
-    return NextResponse.json({
+    const responseBody = {
       results,
       query,
       method: 'keyword',
       count: results.length,
-    })
+    }
+
+    // Cache the keyword search results
+    aiCache.set(cacheKey, responseBody, CACHE_TTL.SEARCH)
+
+    return NextResponse.json(responseBody)
   } catch (error) {
     console.error('Search API error:', error)
     const message = error instanceof Error ? error.message : 'Internal server error'

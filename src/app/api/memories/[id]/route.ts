@@ -23,15 +23,7 @@ export async function PATCH(
     // Handle collection membership updates
     if (collectionIds !== undefined) {
       // Delete existing and recreate
-      try {
-        await db.memoryCollection.deleteMany({ where: { memoryId: id } })
-      } catch (prismaErr) {
-        console.error('Prisma fallback failed:', prismaErr instanceof Error ? prismaErr.message : 'Unknown')
-        return NextResponse.json(
-          { error: 'Database not configured. Please set NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, and SUPABASE_SERVICE_ROLE_KEY in your Vercel environment variables.' },
-          { status: 503 }
-        )
-      }
+      await db.memoryCollection.deleteMany({ where: { memoryId: id } })
       if (Array.isArray(collectionIds) && collectionIds.length > 0) {
         updateData.collections = {
           create: collectionIds.map((cid: string) => ({ collectionId: cid })),
@@ -39,28 +31,19 @@ export async function PATCH(
       }
     }
 
-    let memory
-    try {
-      memory = await db.memory.update({
-        where: { id },
-        data: updateData,
-        include: {
-          collections: {
-            include: {
-              collection: {
-                select: { id: true, name: true, color: true, icon: true },
-              },
+    const memory = await db.memory.update({
+      where: { id },
+      data: updateData,
+      include: {
+        collections: {
+          include: {
+            collection: {
+              select: { id: true, name: true, color: true, icon: true },
             },
           },
         },
-      })
-    } catch (prismaErr) {
-      console.error('Prisma fallback failed:', prismaErr instanceof Error ? prismaErr.message : 'Unknown')
-      return NextResponse.json(
-        { error: 'Database not configured. Please set NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, and SUPABASE_SERVICE_ROLE_KEY in your Vercel environment variables.' },
-        { status: 503 }
-      )
-    }
+      },
+    })
 
     return NextResponse.json({
       id: memory.id,
@@ -68,13 +51,10 @@ export async function PATCH(
       title: memory.title,
       content: memory.content,
       summary: memory.summary,
-      deepInsight: memory.deepInsight || null,
       tags: memory.tags ? memory.tags.split(',').filter(Boolean) : [],
       sourceUrl: memory.sourceUrl,
       fileUrl: memory.fileUrl,
       imagePreview: memory.imagePreview,
-      imageUrl: memory.imageUrl || null,
-      recap: memory.recap || null,
       isFavorite: memory.isFavorite,
       createdAt: memory.createdAt.toISOString(),
       updatedAt: memory.updatedAt.toISOString(),
@@ -99,17 +79,9 @@ export async function DELETE(
   try {
     const { id } = await params
 
-    try {
-      await db.memory.delete({
-        where: { id },
-      })
-    } catch (prismaErr) {
-      console.error('Prisma fallback failed:', prismaErr instanceof Error ? prismaErr.message : 'Unknown')
-      return NextResponse.json(
-        { error: 'Database not configured. Please set NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, and SUPABASE_SERVICE_ROLE_KEY in your Vercel environment variables.' },
-        { status: 503 }
-      )
-    }
+    await db.memory.delete({
+      where: { id },
+    })
 
     return NextResponse.json({ success: true })
   } catch (error) {

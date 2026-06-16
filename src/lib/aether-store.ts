@@ -8,13 +8,10 @@ export interface Memory {
   title: string
   content: string
   summary: string | null
-  deepInsight: string | null
   tags: string[]
   sourceUrl: string | null
   fileUrl: string | null
   imagePreview: string | null
-  imageUrl: string | null
-  recap: string | null
   isFavorite: boolean
   createdAt: string
   updatedAt: string
@@ -54,13 +51,10 @@ interface SupabaseMemoryRow {
   title: string
   content: string
   summary: string | null
-  deep_insight: string | null
   tags: string
   source_url: string | null
   file_url: string | null
   image_preview: string | null
-  image_url: string | null
-  recap: string | null
   is_favorite: boolean
   created_at: string
   updated_at: string
@@ -84,13 +78,10 @@ function mapSupabaseMemory(row: SupabaseMemoryRow): Memory {
     title: row.title || '',
     content: row.content || '',
     summary: row.summary,
-    deepInsight: row.deep_insight || null,
     tags: row.tags ? row.tags.split(',').filter(Boolean) : [],
     sourceUrl: row.source_url,
     fileUrl: row.file_url,
     imagePreview: row.image_preview,
-    imageUrl: row.image_url || null,
-    recap: row.recap || null,
     isFavorite: row.is_favorite || false,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -234,7 +225,7 @@ interface AetherState {
   fetchCollections: () => Promise<void>
 
   // Supabase-aware save
-  saveMemory: (data: { type: MemoryType; title: string; content: string; sourceUrl?: string | null; imageUrl?: string | null; tags?: string[]; collectionIds?: string[] }) => Promise<Memory | null>
+  saveMemory: (data: { type: MemoryType; title: string; content: string; sourceUrl?: string | null; tags?: string[]; collectionIds?: string[]; imagePreview?: string | null; fileUrl?: string | null }) => Promise<Memory | null>
   saveCollection: (data: { name: string; color?: string; icon?: string }) => Promise<Collection | null>
 
   // Delete memory from DB
@@ -260,17 +251,17 @@ export const useAetherStore = create<AetherState>((set, get) => ({
 
   // Auth — start as "local" user, no auth gate
   user: { id: 'local', email: '', name: 'Aether User', avatarUrl: null },
-  isAuthenticated: true,
+  isAuthenticated: false,
   showAuthModal: false,
   pendingAction: null,
   supabaseReady: false,
-  setUser: (user) => set({ user, isAuthenticated: !!user }),
+  setUser: (user) => set({ user, isAuthenticated: !!user && user.id !== 'local' }),
   setShowAuthModal: (showAuthModal) => set({ showAuthModal }),
 
-  // The gate: if there's any user (including local), allow the action. Only show auth modal if NO user at all.
+  // The gate: if user is signed in, run action immediately. Otherwise, queue it and show modal.
   requireAuth: (action) => {
     const state = get()
-    if (state.user) {
+    if (state.isAuthenticated && state.user && state.user.id !== 'local') {
       action()
     } else {
       set({ showAuthModal: true, pendingAction: action })
@@ -358,7 +349,7 @@ export const useAetherStore = create<AetherState>((set, get) => ({
     } catch { /* ignore */ }
     set({
       user: { id: 'local', email: '', name: 'Aether User', avatarUrl: null },
-      isAuthenticated: true,
+      isAuthenticated: false,
       supabaseReady: false,
       chatMessages: [],
     })
@@ -380,8 +371,8 @@ export const useAetherStore = create<AetherState>((set, get) => ({
         }
       }
     } catch { /* ignore */ }
-    // No Supabase session — stay as local user (still "authenticated" for local mode)
-    set({ isAuthenticated: true })
+    // No Supabase session — stay as local user (not gated)
+    set({ isAuthenticated: false })
   },
 
   // Check if Supabase tables exist for the current user
@@ -746,7 +737,7 @@ export const useAetherStore = create<AetherState>((set, get) => ({
   // ── Save Memory (Supabase-aware, optimistic UI, token-saving) ────────
   saveMemory: async (data) => {
     const state = get()
-    const { type, title, content, sourceUrl, imageUrl, tags, collectionIds } = data
+    const { type, title, content, sourceUrl, tags, collectionIds, imagePreview, fileUrl } = data
 
     // ── STEP 1: Smart Token Saver — local, free, instant tags ──────────
     const fullText = `${title || ''} ${content || ''}`.trim()
@@ -782,7 +773,8 @@ export const useAetherStore = create<AetherState>((set, get) => ({
             title: title || '',
             content: content || '',
             source_url: sourceUrl || null,
-            image_url: imageUrl || null,
+            file_url: fileUrl || null,
+            image_preview: imagePreview || null,
             tags: finalTags ? (Array.isArray(finalTags) ? finalTags.join(',') : finalTags) : '',
           })
           .select('*, memory_collections(collection_id, collections(id, name, color, icon))')
@@ -841,9 +833,10 @@ export const useAetherStore = create<AetherState>((set, get) => ({
           title,
           content,
           sourceUrl,
-          imageUrl,
           tags: finalTags,
           collectionIds,
+          imagePreview,
+          fileUrl,
         }),
       })
       if (res.ok) {

@@ -52,3 +52,38 @@ prompt
 server.log
 # Skills directory
 /skills/tool-results/
+
+# Agent / tool artifacts (auto-generated, never commit)
+/tool-results/
+/agent-ctx/
+/.zscripts/
+worklog.md
+
+# Temporary screenshots & captures (root-level)
+/*.png
+/*.jpg
+/*.jpeg
+/*.webp
+/*.gif
+browser-*.png
+screenshot-*.png
+landing-*.png
+calm-ui-*.png
+desktop-*.png
+mobile-*.png
+drawer-*.png
+obsidian-*.png
+final-*.png
+
+# Temporary scripts & test fixtures
+keep-alive.sh
+start-dev.sh
+test-*.wav
+test-*.png
+*.wav
+
+# Local sqlite db (keep schema, ignore data)
+db/*.db
+db/*.db-journal
+prisma/*.db
+prisma/*.db-journal

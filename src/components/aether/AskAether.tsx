@@ -2,20 +2,21 @@
 
 import React, { useState, useRef, useEffect, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Brain, Send, Sparkles, MessageCircle, Clock, X } from 'lucide-react'
+import { Brain, Send, Sparkles, MessageCircle, Volume2, Square, RefreshCw } from 'lucide-react'
 import { useAetherStore, type ChatMessage } from '@/lib/aether-store'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/utils'
 import ReactMarkdown from 'react-markdown'
+import { toast } from 'sonner'
 
 // ─── Suggestion chips ────────────────────────────────────────────────
 const suggestions = [
+  'Recap my week',
   'What did I save this week?',
   'Summarize my recent notes',
   'Find links about design',
-  'What are my favorite memories?',
 ]
 
 // ─── Animation variants ──────────────────────────────────────────────
@@ -38,6 +39,82 @@ const dotBounce = {
       ease: 'easeInOut',
     },
   },
+}
+
+// ─── Helper: strip markdown for TTS ──────────────────────────────────
+function stripMarkdown(text: string): string {
+  return text
+    .replace(/```[\s\S]*?```/g, ' (code block) ')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/\*([^*]+)\*/g, '$1')
+    .replace(/#{1,6}\s+/g, '')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/[_~]/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+// ─── TTS Player Hook ─────────────────────────────────────────────────
+function useTTS() {
+  const [playingId, setPlayingId] = useState<string | null>(null)
+  const [isLoading, setIsLoading] = useState<string | null>(null)
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+
+  const stop = useCallback(() => {
+    if (audioRef.current) {
+      audioRef.current.pause()
+      audioRef.current = null
+    }
+    setPlayingId(null)
+  }, [])
+
+  const play = useCallback(async (id: string, text: string) => {
+    // If already playing this, stop
+    if (playingId === id) {
+      stop()
+      return
+    }
+    // Stop any current playback
+    stop()
+    setIsLoading(id)
+    try {
+      const cleanText = stripMarkdown(text).slice(0, 4000)
+      if (!cleanText) return
+      const res = await fetch('/api/ai/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: cleanText, voice: 'tongtong', speed: 1.0 }),
+      })
+      if (!res.ok) throw new Error('TTS failed')
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const audio = new Audio(url)
+      audioRef.current = audio
+      audio.onended = () => {
+        setPlayingId(null)
+        URL.revokeObjectURL(url)
+      }
+      audio.onerror = () => {
+        setPlayingId(null)
+        URL.revokeObjectURL(url)
+      }
+      await audio.play()
+      setPlayingId(id)
+    } catch (e) {
+      toast.error('Could not play audio')
+    } finally {
+      setIsLoading(null)
+    }
+  }, [playingId, stop])
+
+  useEffect(() => {
+    return () => {
+      if (audioRef.current) audioRef.current.pause()
+    }
+  }, [])
+
+  return { play, stop, playingId, isLoading }
 }
 
 // ─── Typing indicator ────────────────────────────────────────────────
@@ -81,8 +158,22 @@ function TypingIndicator({ isDark }: { isDark: boolean }) {
 }
 
 // ─── Single message bubble ───────────────────────────────────────────
-function ChatBubble({ message, isDark }: { message: ChatMessage; isDark: boolean }) {
+function ChatBubble({
+  message,
+  isDark,
+  onPlay,
+  playingId,
+  ttsLoading,
+}: {
+  message: ChatMessage
+  isDark: boolean
+  onPlay: (id: string, text: string) => void
+  playingId: string | null
+  ttsLoading: string | null
+}) {
   const isUser = message.role === 'user'
+  const isPlaying = playingId === message.id
+  const isLoadingThis = ttsLoading === message.id
 
   return (
     <motion.div
@@ -98,40 +189,65 @@ function ChatBubble({ message, isDark }: { message: ChatMessage; isDark: boolean
         </div>
       )}
 
-      <div
-        className={cn(
-          'max-w-[80%] md:max-w-[70%] rounded-2xl px-4 py-3 shadow-sm',
-          isUser
-            ? 'bg-gradient-to-br from-purple-400 via-violet-500 to-indigo-600 text-white rounded-br-sm shadow-md shadow-purple-500/15'
-            : isDark
-              ? 'bg-white/[0.025] border border-white/[0.04] text-white/90 rounded-bl-sm'
-              : 'bg-white border border-gray-100 text-gray-900 rounded-bl-sm shadow-md'
-        )}
-      >
-        {isUser ? (
-          <p className="text-sm leading-relaxed whitespace-pre-wrap break-words">
-            {message.content}
-          </p>
-        ) : (
-          <div className={cn(
-            'prose prose-sm max-w-none',
-            isDark ? 'dark:prose-invert' : '',
-            'prose-p:leading-relaxed prose-p:my-1',
-            'prose-headings:my-2',
-            isDark ? 'prose-headings:text-white' : 'prose-headings:text-gray-900',
-            'prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5',
-            isDark
-              ? 'prose-code:text-purple-400 prose-code:before:content-[\'\'] prose-code:after:content-[\'\']'
-              : 'prose-code:text-purple-600 prose-code:before:content-[\'\'] prose-code:after:content-[\'\']',
-            isDark
-              ? 'prose-pre:bg-white/[0.025] prose-pre:border prose-pre:border-white/[0.04]'
-              : 'prose-pre:bg-gray-50 prose-pre:border prose-pre:border-gray-100',
-            isDark ? 'prose-strong:text-white' : 'prose-strong:text-gray-900',
-            isDark ? 'prose-a:text-purple-400' : 'prose-a:text-purple-600',
-            'prose-a:underline'
-          )}>
-            <ReactMarkdown>{message.content}</ReactMarkdown>
-          </div>
+      <div className={cn('flex flex-col', isUser ? 'items-end' : 'items-start')}>
+        <div
+          className={cn(
+            'max-w-[80%] md:max-w-[70%] rounded-2xl px-4 py-3 shadow-sm',
+            isUser
+              ? 'bg-gradient-to-br from-purple-400 via-violet-500 to-indigo-600 text-white rounded-br-sm shadow-md shadow-purple-500/15'
+              : isDark
+                ? 'bg-white/[0.025] border border-white/[0.04] text-white/90 rounded-bl-sm'
+                : 'bg-white border border-gray-100 text-gray-900 rounded-bl-sm shadow-md'
+          )}
+        >
+          {isUser ? (
+            <p className="text-sm leading-relaxed whitespace-pre-wrap break-words">
+              {message.content}
+            </p>
+          ) : (
+            <div className={cn(
+              'prose prose-sm max-w-none',
+              isDark ? 'dark:prose-invert' : '',
+              'prose-p:leading-relaxed prose-p:my-1',
+              'prose-headings:my-2',
+              isDark ? 'prose-headings:text-white' : 'prose-headings:text-gray-900',
+              'prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5',
+              isDark
+                ? 'prose-code:text-purple-400 prose-code:before:content-[\'\'] prose-code:after:content-[\'\']'
+                : 'prose-code:text-purple-600 prose-code:before:content-[\'\'] prose-code:after:content-[\'\']',
+              isDark
+                ? 'prose-pre:bg-white/[0.025] prose-pre:border prose-pre:border-white/[0.04]'
+                : 'prose-pre:bg-gray-50 prose-pre:border prose-pre:border-gray-100',
+              isDark ? 'prose-strong:text-white' : 'prose-strong:text-gray-900',
+              isDark ? 'prose-a:text-purple-400' : 'prose-a:text-purple-600',
+              'prose-a:underline'
+            )}>
+              <ReactMarkdown>{message.content}</ReactMarkdown>
+            </div>
+          )}
+        </div>
+
+        {/* TTS button for assistant messages */}
+        {!isUser && message.content && (
+          <button
+            onClick={() => onPlay(message.id, message.content)}
+            disabled={isLoadingThis}
+            className={cn(
+              'mt-1 ml-1 flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full transition-all',
+              'hover:bg-purple-500/10',
+              isDark ? 'text-white/30 hover:text-white/70' : 'text-gray-400 hover:text-purple-600',
+              isPlaying && 'text-purple-500'
+            )}
+          >
+            {isLoadingThis ? (
+              <RefreshCw className="size-3 animate-spin" />
+            ) : isPlaying ? (
+              <Square className="size-3" />
+            ) : (
+              <Volume2 className="size-3" />
+            )}
+            {isLoadingThis ? 'Loading...' : isPlaying ? 'Stop' : 'Listen'}
+          </button>
         )}
       </div>
 
@@ -182,7 +298,7 @@ function EmptyState({ onSuggestionClick, isDark }: { onSuggestionClick: (text: s
         'text-sm max-w-[280px] mb-8',
         isDark ? 'text-white/30' : 'text-gray-500'
       )}>
-        I can search, summarize, and find patterns across everything you&apos;ve saved.
+        I can search, summarize, recap, and find patterns across everything you&apos;ve saved.
       </p>
 
       <div className="flex flex-wrap justify-center gap-2 max-w-[360px]">
@@ -215,16 +331,10 @@ export function AskAether() {
   const [input, setInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
 
-  // ── AI Daily Recap state ────────────────────────────────────────────
-  const [recap, setRecap] = useState<string | null>(null)
-  const [recapLoading, setRecapLoading] = useState(false)
-  const [recapCount, setRecapCount] = useState(0)
-  const [recapTopTags, setRecapTopTags] = useState<string[]>([])
-  const [showRecap, setShowRecap] = useState(true)
-
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const isDark = darkMode
+  const tts = useTTS()
 
   const scrollToBottom = useCallback(() => {
     if (scrollRef.current) {
@@ -235,27 +345,6 @@ export function AskAether() {
         viewport.scrollTop = viewport.scrollHeight
       }
     }
-  }, [])
-
-  // ── Fetch AI Daily Recap on mount ──────────────────────────────────
-  useEffect(() => {
-    const fetchRecap = async () => {
-      setRecapLoading(true)
-      try {
-        const res = await fetch('/api/recap?hours=24')
-        if (res.ok) {
-          const data = await res.json()
-          setRecap(data.recap)
-          setRecapCount(data.count || 0)
-          setRecapTopTags(data.topTags || [])
-        }
-      } catch {
-        setRecap(null)
-      } finally {
-        setRecapLoading(false)
-      }
-    }
-    fetchRecap()
   }, [])
 
   useEffect(() => {
@@ -276,8 +365,40 @@ export function AskAether() {
       addChatMessage(userMessage)
       setInput('')
       setIsLoading(true)
+      // Stop any TTS playback when new message starts
+      tts.stop()
+
+      // Detect recap command — use dedicated recap endpoint for richer output
+      const isRecap = /^(recap|summary|summarize|what.?s new|catch me up|brief me)/i.test(trimmed)
 
       try {
+        // For recap, use the dedicated recap endpoint
+        if (isRecap) {
+          const timeframeMatch = /today|day\b/i.test(trimmed) ? 'today'
+            : /week/i.test(trimmed) ? 'week'
+            : /all|everything|month/i.test(trimmed) ? 'all'
+            : 'week'
+
+          const res = await fetch('/api/ai/recap', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ timeframe: timeframeMatch }),
+          })
+
+          if (!res.ok) throw new Error(`Error: ${res.status}`)
+
+          const data = await res.json()
+          const assistantMessage: ChatMessage = {
+            id: `assistant-${Date.now()}`,
+            role: 'assistant',
+            content: data.recap || 'Sorry, I could not generate a recap.',
+            timestamp: new Date(),
+          }
+          addChatMessage(assistantMessage)
+          return
+        }
+
+        // Normal chat — streaming
         const res = await fetch('/api/ai/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -330,7 +451,7 @@ export function AskAether() {
         inputRef.current?.focus()
       }
     },
-    [isLoading, addChatMessage]
+    [isLoading, addChatMessage, tts]
   )
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -364,7 +485,7 @@ export function AskAether() {
                 'text-xs',
                 isDark ? 'text-white/25' : 'text-gray-500'
               )}>
-                Search through your memories with AI
+                Search, recap, and connect your memories with AI
               </p>
             </div>
           </div>
@@ -373,7 +494,7 @@ export function AskAether() {
             <Button
               variant="ghost"
               size="sm"
-              onClick={clearChat}
+              onClick={() => { clearChat(); tts.stop() }}
               className={cn(
                 isDark ? 'text-white/25 hover:text-white/60' : 'text-gray-400 hover:text-gray-700'
               )}
@@ -383,92 +504,6 @@ export function AskAether() {
           )}
         </div>
       </div>
-
-      {/* ── AI Daily Recap Card ───────────────────────────────────── */}
-      {showRecap && (
-        <motion.div
-          initial={{ opacity: 0, y: -8 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.3 }}
-          className="shrink-0 mb-3"
-        >
-          <div className={cn(
-            'rounded-2xl p-4 relative overflow-hidden',
-            isDark
-              ? 'bg-gradient-to-br from-purple-500/10 to-indigo-500/10 border border-purple-500/15'
-              : 'bg-gradient-to-br from-purple-50 via-violet-50 to-indigo-50 border border-purple-100/60'
-          )}>
-            {/* Shimmer effect while loading */}
-            {recapLoading && (
-              <motion.div
-                className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent"
-                animate={{ x: ['-100%', '200%'] }}
-                transition={{ duration: 1.5, repeat: Infinity, ease: 'easeInOut' }}
-              />
-            )}
-
-            <div className="flex items-start justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <div className={cn(
-                  'size-7 rounded-lg flex items-center justify-center',
-                  isDark ? 'bg-purple-500/20' : 'bg-purple-100'
-                )}>
-                  <Clock className={cn('size-3.5', isDark ? 'text-purple-400' : 'text-purple-600')} />
-                </div>
-                <div>
-                  <h3 className={cn('text-xs font-semibold', isDark ? 'text-purple-300' : 'text-purple-700')}>
-                    Daily Recap
-                  </h3>
-                  <p className={cn('text-[10px]', isDark ? 'text-white/20' : 'text-gray-400')}>
-                    Last 24h · {recapCount} memories
-                  </p>
-                </div>
-              </div>
-              <button
-                onClick={() => setShowRecap(false)}
-                className={cn(
-                  'size-5 rounded-full flex items-center justify-center transition-colors',
-                  isDark ? 'hover:bg-white/10 text-white/30' : 'hover:bg-purple-100 text-gray-400'
-                )}
-              >
-                <X className="size-3" />
-              </button>
-            </div>
-
-            <div className={cn('mt-3 text-sm leading-relaxed', isDark ? 'text-white/60' : 'text-gray-700')}>
-              {recapLoading ? (
-                <div className="space-y-2">
-                  <div className="h-3 w-full rounded-full bg-purple-100/50 animate-pulse" />
-                  <div className="h-3 w-4/5 rounded-full bg-purple-100/40 animate-pulse" />
-                  <div className="h-3 w-3/5 rounded-full bg-purple-100/30 animate-pulse" />
-                </div>
-              ) : recap ? (
-                <p>{recap}</p>
-              ) : (
-                <p className={cn(isDark ? 'text-white/20' : 'text-gray-400')}>No recap available</p>
-              )}
-            </div>
-
-            {recapTopTags.length > 0 && !recapLoading && (
-              <div className="flex gap-1 mt-3">
-                {recapTopTags.slice(0, 4).map((tag) => (
-                  <span
-                    key={tag}
-                    className={cn(
-                      'text-[10px] px-2 py-0.5 rounded-full font-medium',
-                      isDark
-                        ? 'bg-purple-500/15 text-purple-300'
-                        : 'bg-purple-100/60 text-purple-600'
-                    )}
-                  >
-                    {tag}
-                  </span>
-                ))}
-              </div>
-            )}
-          </div>
-        </motion.div>
-      )}
 
       {/* ── Chat Area ──────────────────────────────────────────────── */}
       <div className="flex-1 min-h-0">
@@ -481,7 +516,14 @@ export function AskAether() {
                 <div className="flex flex-col gap-4 py-2 pb-4">
                   {chatMessages.map((msg) => (
                     msg.content ? (
-                      <ChatBubble key={msg.id} message={msg} isDark={isDark} />
+                      <ChatBubble
+                        key={msg.id}
+                        message={msg}
+                        isDark={isDark}
+                        onPlay={tts.play}
+                        playingId={tts.playingId}
+                        ttsLoading={tts.isLoading}
+                      />
                     ) : (
                       msg.role === 'assistant' && isLoading ? (
                         <TypingIndicator key={msg.id} isDark={isDark} />
@@ -515,7 +557,7 @@ export function AskAether() {
               ref={inputRef}
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="Ask about your memories..."
+              placeholder="Ask about your memories, or type 'recap my week'..."
               disabled={isLoading}
               className={cn(
                 'rounded-xl h-11 pl-4 pr-4 text-sm border-0 shadow-none bg-transparent',

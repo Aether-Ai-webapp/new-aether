@@ -51,13 +51,10 @@ export async function GET() {
             title: m.title,
             content: m.content,
             summary: m.summary,
-            deepInsight: m.deep_insight || null,
             tags: m.tags ? (m.tags as string).split(',').filter(Boolean) : [],
             sourceUrl: m.source_url,
             fileUrl: m.file_url,
             imagePreview: m.image_preview,
-            imageUrl: m.image_url || null,
-            recap: m.recap || null,
             isFavorite: m.is_favorite,
             createdAt: m.created_at,
             updatedAt: m.updated_at,
@@ -77,52 +74,42 @@ export async function GET() {
       // Fall through to Prisma
     }
 
-    // Fallback: Prisma (local dev only — SQLite won't work on Vercel)
-    try {
-      const memories = await db.memory.findMany({
-        orderBy: { createdAt: 'desc' },
-        include: {
-          collections: {
-            include: {
-              collection: {
-                select: { id: true, name: true, color: true, icon: true },
-              },
+    // Fallback: Prisma
+    const memories = await db.memory.findMany({
+      orderBy: { createdAt: 'desc' },
+      include: {
+        collections: {
+          include: {
+            collection: {
+              select: { id: true, name: true, color: true, icon: true },
             },
           },
         },
-      })
+      },
+    })
 
-      const result = memories.map((m) => ({
-        id: m.id,
-        type: m.type,
-        title: m.title,
-        content: m.content,
-        summary: m.summary,
-        deepInsight: m.deepInsight || null,
-        tags: m.tags ? m.tags.split(',').filter(Boolean) : [],
-        sourceUrl: m.sourceUrl,
-        fileUrl: m.fileUrl,
-        imagePreview: m.imagePreview,
-        imageUrl: m.imageUrl || null,
-        isFavorite: m.isFavorite,
-        createdAt: m.createdAt.toISOString(),
-        updatedAt: m.updatedAt.toISOString(),
-        collections: m.collections.map((mc) => ({
-          id: mc.collection.id,
-          name: mc.collection.name,
-          color: mc.collection.color,
-          icon: mc.collection.icon,
-        })),
-      }))
+    const result = memories.map((m) => ({
+      id: m.id,
+      type: m.type,
+      title: m.title,
+      content: m.content,
+      summary: m.summary,
+      tags: m.tags ? m.tags.split(',').filter(Boolean) : [],
+      sourceUrl: m.sourceUrl,
+      fileUrl: m.fileUrl,
+      imagePreview: m.imagePreview,
+      isFavorite: m.isFavorite,
+      createdAt: m.createdAt.toISOString(),
+      updatedAt: m.updatedAt.toISOString(),
+      collections: m.collections.map((mc) => ({
+        id: mc.collection.id,
+        name: mc.collection.name,
+        color: mc.collection.color,
+        icon: mc.collection.icon,
+      })),
+    }))
 
-      return NextResponse.json(result)
-    } catch (prismaErr) {
-      console.error('Prisma fallback failed:', prismaErr instanceof Error ? prismaErr.message : 'Unknown')
-      return NextResponse.json(
-        { error: 'Database not configured. Please set NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, and SUPABASE_SERVICE_ROLE_KEY in your Vercel environment variables.' },
-        { status: 503 }
-      )
-    }
+    return NextResponse.json(result)
   } catch (error) {
     console.error('Failed to fetch memories:', error)
     return NextResponse.json({ error: 'Failed to fetch memories' }, { status: 500 })
@@ -134,10 +121,10 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json()
-    const { type, title, content, sourceUrl, tags, collectionIds } = body
+    const { type, title, content, sourceUrl, tags, collectionIds, imagePreview, fileUrl } = body
 
-    if (!content?.trim() && !sourceUrl?.trim()) {
-      return NextResponse.json({ error: 'Content or URL is required' }, { status: 400 })
+    if (!content?.trim() && !sourceUrl?.trim() && !imagePreview?.trim()) {
+      return NextResponse.json({ error: 'Content, URL, or image is required' }, { status: 400 })
     }
 
     // Auto-generate tags if not provided
@@ -164,6 +151,8 @@ export async function POST(req: NextRequest) {
             title: title || '',
             content: content || '',
             source_url: sourceUrl || null,
+            file_url: fileUrl || null,
+            image_preview: imagePreview || null,
             tags: finalTags ? (Array.isArray(finalTags) ? finalTags.join(',') : finalTags) : '',
           })
           .select('*, memory_collections(collection_id, collections(id, name, color, icon))')
@@ -182,23 +171,6 @@ export async function POST(req: NextRequest) {
             )
           }
 
-          // Re-fetch memory with collections to return complete data
-          let collectionsForResponse: { id: unknown; name: unknown; color: unknown; icon: unknown }[] = []
-          if (collectionIds?.length) {
-            const { data: collectionRows } = await supabase
-              .from('collections')
-              .select('id, name, color, icon')
-              .in('id', collectionIds)
-            if (collectionRows) {
-              collectionsForResponse = collectionRows.map((c: Record<string, unknown>) => ({
-                id: c.id,
-                name: c.name,
-                color: c.color,
-                icon: c.icon,
-              }))
-            }
-          }
-
           return NextResponse.json(
             {
               id: m.id,
@@ -206,17 +178,14 @@ export async function POST(req: NextRequest) {
               title: m.title,
               content: m.content,
               summary: m.summary,
-              deepInsight: m.deep_insight || null,
               tags: m.tags ? (m.tags as string).split(',').filter(Boolean) : [],
               sourceUrl: m.source_url,
               fileUrl: m.file_url,
               imagePreview: m.image_preview,
-              imageUrl: m.image_url || null,
-              recap: m.recap || null,
               isFavorite: m.is_favorite,
               createdAt: m.created_at,
               updatedAt: m.updated_at,
-              collections: collectionsForResponse,
+              collections: [],
             },
             { status: 201 }
           )
@@ -227,67 +196,59 @@ export async function POST(req: NextRequest) {
       // Fall through to Prisma
     }
 
-    // Fallback: Prisma (local dev only — SQLite won't work on Vercel)
-    try {
-      const memory = await db.memory.create({
-        data: {
-          type: type || 'text',
-          title: title || '',
-          content: content || '',
-          summary: null,
-          sourceUrl: sourceUrl || null,
-          tags: finalTags ? (Array.isArray(finalTags) ? finalTags.join(',') : finalTags) : '',
-          collections: collectionIds?.length
-            ? {
-                create: collectionIds.map((cid: string) => ({
-                  collectionId: cid,
-                })),
-              }
-            : undefined,
-        },
-        include: {
-          collections: {
-            include: {
-              collection: {
-                select: { id: true, name: true, color: true, icon: true },
-              },
+    // Fallback: Prisma
+    const memory = await db.memory.create({
+      data: {
+        type: type || 'text',
+        title: title || '',
+        content: content || '',
+        summary: null,
+        sourceUrl: sourceUrl || null,
+        fileUrl: fileUrl || null,
+        imagePreview: imagePreview || null,
+        tags: finalTags ? (Array.isArray(finalTags) ? finalTags.join(',') : finalTags) : '',
+        collections: collectionIds?.length
+          ? {
+              create: collectionIds.map((cid: string) => ({
+                collectionId: cid,
+              })),
+            }
+          : undefined,
+      },
+      include: {
+        collections: {
+          include: {
+            collection: {
+              select: { id: true, name: true, color: true, icon: true },
             },
           },
         },
-      })
+      },
+    })
 
-      return NextResponse.json(
-        {
-          id: memory.id,
-          type: memory.type,
-          title: memory.title,
-          content: memory.content,
-          summary: memory.summary,
-          deepInsight: memory.deepInsight || null,
-          tags: memory.tags ? memory.tags.split(',').filter(Boolean) : [],
-          sourceUrl: memory.sourceUrl,
-          fileUrl: memory.fileUrl,
-          imagePreview: memory.imagePreview,
-          imageUrl: memory.imageUrl || null,
-          isFavorite: memory.isFavorite,
-          createdAt: memory.createdAt.toISOString(),
-          updatedAt: memory.updatedAt.toISOString(),
-          collections: memory.collections.map((mc) => ({
-            id: mc.collection.id,
-            name: mc.collection.name,
-            color: mc.collection.color,
-            icon: mc.collection.icon,
-          })),
-        },
-        { status: 201 }
-      )
-    } catch (prismaErr) {
-      console.error('Prisma fallback failed:', prismaErr instanceof Error ? prismaErr.message : 'Unknown')
-      return NextResponse.json(
-        { error: 'Database not configured. Please set NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, and SUPABASE_SERVICE_ROLE_KEY in your Vercel environment variables.' },
-        { status: 503 }
-      )
-    }
+    return NextResponse.json(
+      {
+        id: memory.id,
+        type: memory.type,
+        title: memory.title,
+        content: memory.content,
+        summary: memory.summary,
+        tags: memory.tags ? memory.tags.split(',').filter(Boolean) : [],
+        sourceUrl: memory.sourceUrl,
+        fileUrl: memory.fileUrl,
+        imagePreview: memory.imagePreview,
+        isFavorite: memory.isFavorite,
+        createdAt: memory.createdAt.toISOString(),
+        updatedAt: memory.updatedAt.toISOString(),
+        collections: memory.collections.map((mc) => ({
+          id: mc.collection.id,
+          name: mc.collection.name,
+          color: mc.collection.color,
+          icon: mc.collection.icon,
+        })),
+      },
+      { status: 201 }
+    )
   } catch (error) {
     console.error('Failed to create memory:', error)
     return NextResponse.json({ error: 'Failed to create memory' }, { status: 500 })

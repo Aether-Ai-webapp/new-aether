@@ -49,7 +49,7 @@ export async function GET(
     }
     
     // 2. Try semantic search with pgvector
-    const geminiKey = process.env.GEMINI_API_KEY
+    const geminiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY
     if (geminiKey && targetMemory.user_id) {
       try {
         const { GoogleGenerativeAI } = await import('@google/generative-ai')
